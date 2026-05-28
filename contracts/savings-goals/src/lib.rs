@@ -543,6 +543,25 @@ impl SavingsGoalsContract {
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Number of recurring auto-contribution cycles due between
+    /// `last_contributed_at` and the current ledger time for a given interval.
+    ///
+    /// Use `604_800` seconds for a weekly schedule or `2_592_000` for monthly.
+    /// Missed cycles are counted (not collapsed to one) so they can be settled
+    /// safely in a single catch-up call.
+    pub fn contributions_due(env: Env, last_contributed_at: u64, interval_seconds: u64) -> u64 {
+        if interval_seconds == 0 {
+            return 0;
+        }
+
+        let now = env.ledger().timestamp();
+        if now <= last_contributed_at {
+            0
+        } else {
+            (now - last_contributed_at) / interval_seconds
+        }
+    }
+
     /// Returns the admin address.
     pub fn get_admin(env: Env) -> Address {
         env.storage()

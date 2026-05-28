@@ -361,6 +361,65 @@ impl SharedBudgetContract {
             .unwrap_or(false)
     }
 
+    /// Returns the role of an account within a budget: "OWNER" for the creator,
+    /// "MEMBER" for a member, or "NONE" if the account is unrelated to the budget.
+    pub fn get_member_role(env: Env, budget_id: u64, account: Address) -> Symbol {
+        let budget: Budget = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Budget(budget_id))
+            .unwrap_or_else(|| panic_with_error!(&env, SharedBudgetError::BudgetNotFound));
+
+        if account == budget.creator {
+            return Symbol::new(&env, "OWNER");
+        }
+
+        let is_member = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BudgetMember(budget_id, account))
+            .unwrap_or(false);
+
+        if is_member {
+            Symbol::new(&env, "MEMBER")
+        } else {
+            Symbol::new(&env, "NONE")
+        }
+    }
+
+    /// Returns budget utilization analytics as
+    /// `(utilization_percent, total_spent, avg_spending_per_member, remaining_balance)`.
+    ///
+    /// Utilization is the share of contributed funds that have been spent.
+    pub fn get_budget_utilization(env: Env, budget_id: u64) -> (u32, i128, i128, i128) {
+        let budget: Budget = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Budget(budget_id))
+            .unwrap_or_else(|| panic_with_error!(&env, SharedBudgetError::BudgetNotFound));
+
+        let total_spent = budget.total_contributed - budget.balance;
+        let utilization_percent = if budget.total_contributed > 0 {
+            (total_spent * 100 / budget.total_contributed) as u32
+        } else {
+            0
+        };
+
+        let member_count = budget.members.len() as i128;
+        let avg_spending_per_member = if member_count > 0 {
+            total_spent / member_count
+        } else {
+            0
+        };
+
+        (
+            utilization_percent,
+            total_spent,
+            avg_spending_per_member,
+            budget.balance,
+        )
+    }
+
     /// Get contribution details.
     pub fn get_contribution(env: Env, contribution_id: u64) -> BudgetContribution {
         env.storage()

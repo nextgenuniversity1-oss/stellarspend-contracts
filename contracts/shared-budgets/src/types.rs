@@ -131,6 +131,19 @@ impl SharedBudgetEvents {
             .publish(topics, (successful, failed, total_allocated));
     }
 
+    /// Event emitted when an expense is incurred against a budget.
+    pub fn expense_incurred(
+        env: &Env,
+        budget_id: u64,
+        spender: &Address,
+        recipient: &Address,
+        amount: i128,
+    ) {
+        let topics = (symbol_short!("budget"), symbol_short!("expense"), budget_id);
+        env.events()
+            .publish(topics, (spender.clone(), recipient.clone(), amount));
+    }
+
     /// Event emitted when a spending rule is added to a budget.
     pub fn spending_rule_added(env: &Env, budget_id: u64, rule: &BudgetSpendingRule) {
         let topics = (symbol_short!("budget"), symbol_short!("rule"), budget_id);

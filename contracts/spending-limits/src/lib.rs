@@ -379,6 +379,28 @@ impl SpendingLimitsContract {
             .set(&DataKey::SpendingLimit(user), &limit);
     }
 
+    /// Records an admin-approved emergency spending override on-chain.
+    ///
+    /// Requires the admin's signature (`require_auth`) so the override cannot be
+    /// performed without explicit approval, and emits an auditable event so the
+    /// bypass is preserved in the on-chain audit trail.
+    pub fn emergency_override(env: Env, admin: Address, user: Address, amount: i128) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        if amount <= 0 {
+            panic_with_error!(&env, SpendingLimitError::InvalidAmount);
+        }
+
+        env.events().publish(
+            (
+                soroban_sdk::symbol_short!("limit"),
+                soroban_sdk::symbol_short!("override"),
+            ),
+            (admin, user, amount, env.ledger().timestamp()),
+        );
+    }
+
     /// Retrieves a user's spending limit.
     ///
     /// # Arguments
