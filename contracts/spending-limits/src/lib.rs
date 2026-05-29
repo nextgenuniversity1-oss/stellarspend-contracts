@@ -28,7 +28,7 @@ use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Vec};
 
 pub use crate::types::{
     BatchLimitMetrics, BatchLimitResult, DataKey, ErrorCode, LimitEvents, LimitUpdateResult,
-    SpendingLimit, SpendingLimitRequest, MAX_BATCH_SIZE,
+    SpendingLimit, SpendingLimitRequest, LimitsConfig, MAX_BATCH_SIZE,
 };
 use crate::validation::validate_limit_request;
 
@@ -70,19 +70,22 @@ impl SpendingLimitsContract {
     /// # Arguments
     /// * `env` - The contract environment
     /// * `admin` - The admin address that can manage the contract
+    ///
+    /// # Storage Optimization
+    /// Uses a consolidated `LimitsConfig` struct instead of 4 separate
+    /// storage entries, reducing initialization writes from 4 to 1.
     pub fn initialize(env: Env, admin: Address) {
-        if env.storage().instance().has(&DataKey::Admin) {
+        if env.storage().instance().has(&DataKey::LimitsConfig) {
             panic!("Contract already initialized");
         }
 
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::LastBatchId, &0u64);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalLimitsUpdated, &0u64);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalBatchesProcessed, &0u64);
+        let config = LimitsConfig {
+            admin,
+            last_batch_id: 0,
+            total_limits_updated: 0,
+            total_batches_processed: 0,
+        };
+        env.storage().instance().set(&DataKey::LimitsConfig, &config);
     }
 
     /// Updates monthly spending limits for multiple users in a batch.
@@ -127,13 +130,13 @@ impl SpendingLimitsContract {
             panic_with_error!(&env, SpendingLimitError::BatchTooLarge);
         }
 
-        // Get batch ID and increment
-        let batch_id: u64 = env
+        // Get batch ID and increment from consolidated config
+        let mut config: LimitsConfig = env
             .storage()
             .instance()
-            .get(&DataKey::LastBatchId)
-            .unwrap_or(0)
-            + 1;
+            .get(&DataKey::LimitsConfig)
+            .expect("Contract not initialized");
+        let batch_id: u64 = config.last_batch_id + 1;
 
         // Emit batch started event
         LimitEvents::batch_started(&env, batch_id, request_count);
@@ -218,28 +221,19 @@ impl SpendingLimitsContract {
             processed_at: current_ledger,
         };
 
-        // Update storage (batched at the end for efficiency)
-        let total_limits: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalLimitsUpdated)
-            .unwrap_or(0);
-        let total_batches: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalBatchesProcessed)
-            .unwrap_or(0);
-
+        // Update consolidated config (single write instead of 4)
+        config.last_batch_id = batch_id;
+        config.total_limits_updated = config
+            .total_limits_updated
+            .checked_add(successful_count as u64)
+            .unwrap_or(u64::MAX);
+        config.total_batches_processed = config
+            .total_batches_processed
+            .checked_add(1)
+            .unwrap_or(u64::MAX);
         env.storage()
             .instance()
-            .set(&DataKey::LastBatchId, &batch_id);
-        env.storage().instance().set(
-            &DataKey::TotalLimitsUpdated,
-            &(total_limits + successful_count as u64),
-        );
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalBatchesProcessed, &(total_batches + 1));
+            .set(&DataKey::LimitsConfig, &config);
 
         // Emit batch completed event
         LimitEvents::batch_completed(
@@ -419,8 +413,9 @@ impl SpendingLimitsContract {
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
-            .get(&DataKey::Admin)
+            .get::<DataKey, LimitsConfig>(&DataKey::LimitsConfig)
             .expect("Contract not initialized")
+            .admin
     }
 
     /// Updates the admin address.
@@ -428,14 +423,23 @@ impl SpendingLimitsContract {
         current_admin.require_auth();
         Self::require_admin(&env, &current_admin);
 
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        let mut config: LimitsConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::LimitsConfig)
+            .expect("Contract not initialized");
+        config.admin = new_admin;
+        env.storage()
+            .instance()
+            .set(&DataKey::LimitsConfig, &config);
     }
 
     /// Returns the last created batch ID.
     pub fn get_last_batch_id(env: Env) -> u64 {
         env.storage()
             .instance()
-            .get(&DataKey::LastBatchId)
+            .get::<DataKey, LimitsConfig>(&DataKey::LimitsConfig)
+            .map(|c| c.last_batch_id)
             .unwrap_or(0)
     }
 
@@ -443,7 +447,8 @@ impl SpendingLimitsContract {
     pub fn get_total_limits_updated(env: Env) -> u64 {
         env.storage()
             .instance()
-            .get(&DataKey::TotalLimitsUpdated)
+            .get::<DataKey, LimitsConfig>(&DataKey::LimitsConfig)
+            .map(|c| c.total_limits_updated)
             .unwrap_or(0)
     }
 
@@ -451,19 +456,20 @@ impl SpendingLimitsContract {
     pub fn get_total_batches_processed(env: Env) -> u64 {
         env.storage()
             .instance()
-            .get(&DataKey::TotalBatchesProcessed)
+            .get::<DataKey, LimitsConfig>(&DataKey::LimitsConfig)
+            .map(|c| c.total_batches_processed)
             .unwrap_or(0)
     }
 
     // Internal helper to verify admin
     fn require_admin(env: &Env, caller: &Address) {
-        let admin: Address = env
+        let config: LimitsConfig = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
+            .get(&DataKey::LimitsConfig)
             .expect("Contract not initialized");
 
-        if *caller != admin {
+        if *caller != config.admin {
             panic_with_error!(env, SpendingLimitError::Unauthorized);
         }
     }
@@ -471,14 +477,3 @@ impl SpendingLimitsContract {
 
 #[cfg(test)]
 mod test;
-
-#[derive(Clone)]
-#[contracttype]
-pub struct Budget {
-    pub owner: Address,
-    pub limit: i128,
-    pub spent: i128,
-
-    // backward-compatible
-    pub category: Option<BudgetCategory>,
-}

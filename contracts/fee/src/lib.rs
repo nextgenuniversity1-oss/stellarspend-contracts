@@ -31,7 +31,8 @@ use crate::storage::{
     write_admin, write_current_cycle, write_fee_bps,
     write_max_fee, read_max_fee,
     write_last_active, write_locked, write_min_fee, write_token, write_treasury,
-    DEFAULT_FEE_BPS, DEFAULT_MIN_FEE,
+    DEFAULT_FEE_BPS, DEFAULT_MIN_FEE, DEFAULT_MAX_FEE,
+    FeeConfig, FeeStats,
 };
 pub use crate::storage::{BatchFeeResult, DataKey, MAX_BATCH_SIZE, MAX_FEE_BPS};
 use crate::auth::require_admin;
@@ -82,17 +83,37 @@ impl FeeContract {
         }
         validate_fee_percentage_bounds(&env, fee_bps);
 
-        write_admin(&env, &admin);
-        write_token(&env, &token);
-        write_treasury(&env, &treasury);
-        write_fee_bps(&env, fee_bps);
-        write_locked(&env, false);
-        write_current_cycle(&env, initial_cycle);
+        // Storage optimization (#484): write FeeConfig once instead of 6
+        // separate storage operations.
+        let config = FeeConfig {
+            admin,
+            token,
+            treasury,
+            fee_bps,
+            min_fee: DEFAULT_MIN_FEE,
+            max_fee: DEFAULT_MAX_FEE,
+            is_locked: false,
+            current_cycle: initial_cycle,
+        };
+        env.storage().instance().set(&DataKey::FeeConfig, &config);
+
+        // Initialize stats.
+        let stats = FeeStats {
+            escrow_balance: 0,
+            total_collected: 0,
+            total_released: 0,
+            total_batch_calls: 0,
+        };
+        env.storage().instance().set(&DataKey::FeeStats, &stats);
     }
 
     /// Initializes the contract with default fee configuration:
     /// - Fee: 3.00% (300 BPS)
     /// - Initial Cycle: 1
+    ///
+    /// # Storage Optimization (#484)
+    /// Writes FeeConfig and FeeStats in 2 operations instead of 10+ separate
+    /// storage writes, reducing Soroban storage I/O overhead.
     pub fn init(env: Env, admin: Address, token: Address, treasury: Address) {
         Self::initialize(env, admin, token, treasury, 300, 1);
     }
