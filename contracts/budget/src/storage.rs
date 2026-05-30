@@ -74,6 +74,10 @@ pub enum DataKey {
     UserAssets(Address),
     TotalAllocated,
     PendingDeletion(Address),
+    LastActivity(Address),
+    InactivityTimeout(Address),
+    InheritanceBeneficiaries(Address),
+    Beneficiaries(Address),
 }
 
 pub fn get_user_budget(env: &Env, user: &Address) -> Option<UserBudget> {
@@ -224,4 +228,56 @@ pub fn increment_suspicious_count(env: &Env) -> u64 {
         .instance()
         .set(&DataKey::SuspiciousActivityCount, &count);
     count
+}
+
+pub fn get_last_activity(env: &Env, user: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::LastActivity(user.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_last_activity(env: &Env, user: &Address, timestamp: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::LastActivity(user.clone()), &timestamp);
+}
+
+pub fn get_inactivity_timeout(env: &Env, user: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::InactivityTimeout(user.clone()))
+        .unwrap_or(30 * 24 * 60 * 60) // default 30 days
+}
+
+pub fn set_inactivity_timeout(env: &Env, user: &Address, timeout: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::InactivityTimeout(user.clone()), &timeout);
+}
+
+pub fn get_inheritance_beneficiaries(env: &Env, user: &Address) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::InheritanceBeneficiaries(user.clone()))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_inheritance_beneficiaries(env: &Env, user: &Address, beneficiaries: &Vec<Address>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::InheritanceBeneficiaries(user.clone()), beneficiaries);
+}
+
+pub fn get_beneficiaries(env: &Env, user: &Address) -> Vec<crate::types::Beneficiary> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Beneficiaries(user.clone()))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_beneficiaries(env: &Env, user: &Address, beneficiaries: &Vec<crate::types::Beneficiary>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Beneficiaries(user.clone()), beneficiaries);
 }

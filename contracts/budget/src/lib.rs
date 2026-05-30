@@ -7,6 +7,7 @@
 #![no_std]
 
 mod storage;
+mod types;
 #[cfg(test)]
 mod test;
 
@@ -19,6 +20,8 @@ pub use storage::{
     BudgetFreeze, CategoryBudget, CategoryTransfer, DataKey, SpendingWindow, UserBudget,
     DEFAULT_FREEZE_DURATION_SECONDS, RAPID_SPEND_THRESHOLD, RAPID_SPEND_WINDOW_SECONDS,
 };
+
+pub use types::Beneficiary;
 
 use storage::{
     clear_budget_freeze, get_budget_freeze, get_category_available, get_transfer,
@@ -46,6 +49,9 @@ pub enum BudgetError {
     SameCategory = 10,
     BudgetFrozen = 11,
     SuspiciousActivity = 12,
+    NotABeneficiary = 13,
+    InactivityPeriodNotElapsed = 14,
+    InvalidPercentages = 15,
 }
 
 impl From<BudgetError> for soroban_sdk::Error {
@@ -133,6 +139,41 @@ impl BudgetEvents {
         env.events().publish(
             (symbol_short!("budget"), symbol_short!("unfrozen")),
             (user.clone(), unfrozen_at),
+        );
+    }
+
+    pub fn ownership_transferred(env: &Env, old_owner: &Address, new_owner: &Address, timestamp: u64) {
+        env.events().publish(
+            (symbol_short!("budget"), symbol_short!("own_trsf")),
+            (old_owner.clone(), new_owner.clone(), timestamp),
+        );
+    }
+
+    pub fn beneficiaries_updated(env: &Env, user: &Address) {
+        env.events().publish(
+            (symbol_short!("budget"), symbol_short!("ben_upd")),
+            user.clone(),
+        );
+    }
+
+    pub fn inheritance_beneficiaries_updated(env: &Env, user: &Address) {
+        env.events().publish(
+            (symbol_short!("budget"), symbol_short!("inh_upd")),
+            user.clone(),
+        );
+    }
+
+    pub fn funds_distributed(
+        env: &Env,
+        owner: &Address,
+        beneficiary: &Address,
+        amount: i128,
+        asset: &Option<Address>,
+        timestamp: u64,
+    ) {
+        env.events().publish(
+            (symbol_short!("budget"), symbol_short!("distrib")),
+            (owner.clone(), beneficiary.clone(), amount, asset.clone(), timestamp),
         );
     }
 }
@@ -224,6 +265,8 @@ impl BudgetContract {
             .instance()
             .set(&DataKey::TotalAllocated, &total_allocated);
 
+        storage::set_last_activity(&env, &user, current_time);
+
         env.events().publish(
             (symbol_short!("budget"), symbol_short!("updated")),
             (user, amount, current_time),
@@ -268,6 +311,8 @@ impl BudgetContract {
         );
         budget.last_updated = now;
         set_user_budget(&env, &budget);
+
+        storage::set_last_activity(&env, &user, now);
 
         BudgetEvents::category_budget_set(&env, &user, &category, limit);
     }
@@ -327,6 +372,8 @@ impl BudgetContract {
         budget.last_updated = env.ledger().timestamp();
         set_user_budget(&env, &budget);
 
+        storage::set_last_activity(&env, &user, budget.last_updated);
+
         let transfer_id = next_transfer_id(&env);
         let transfer = CategoryTransfer {
             transfer_id,
@@ -384,6 +431,8 @@ impl BudgetContract {
         budget.last_updated = now;
         set_user_budget(&env, &budget);
 
+        storage::set_last_activity(&env, &user, now);
+
         let recent_count = record_spend_timestamp(&env, &user, now);
         if recent_count >= RAPID_SPEND_THRESHOLD {
             Self::freeze_for_suspicious_activity(&env, &user, now);
@@ -407,7 +456,9 @@ impl BudgetContract {
 
         if get_budget_freeze(&env, &user).is_some() {
             clear_budget_freeze(&env, &user);
-            BudgetEvents::budget_unfrozen(&env, &user, env.ledger().timestamp());
+            let now = env.ledger().timestamp();
+            storage::set_last_activity(&env, &user, now);
+            BudgetEvents::budget_unfrozen(&env, &user, now);
         }
     }
 
@@ -623,6 +674,358 @@ impl BudgetContract {
             .instance()
             .get(&DataKey::TotalAllocated)
             .unwrap_or(0)
+    }
+
+    /// Sets the inactivity timeout for a user.
+    pub fn set_inactivity_timeout(env: Env, user: Address, timeout: u64) {
+        user.require_auth();
+        storage::set_inactivity_timeout(&env, &user, timeout);
+        storage::set_last_activity(&env, &user, env.ledger().timestamp());
+    }
+
+    /// Gets the inactivity timeout for a user.
+    pub fn get_inactivity_timeout(env: Env, user: Address) -> u64 {
+        storage::get_inactivity_timeout(&env, &user)
+    }
+
+    /// Gets the last activity timestamp for a user.
+    pub fn get_last_activity(env: Env, user: Address) -> u64 {
+        Self::get_last_activity_time(&env, &user)
+    }
+
+    /// Registers inheritance beneficiaries for ownership transfer.
+    pub fn register_inheritance_beneficiaries(env: Env, user: Address, beneficiaries: Vec<Address>) {
+        user.require_auth();
+        storage::set_inheritance_beneficiaries(&env, &user, &beneficiaries);
+        storage::set_last_activity(&env, &user, env.ledger().timestamp());
+        BudgetEvents::inheritance_beneficiaries_updated(&env, &user);
+    }
+
+    /// Gets registered inheritance beneficiaries.
+    pub fn get_inheritance_beneficiaries(env: Env, user: Address) -> Vec<Address> {
+        storage::get_inheritance_beneficiaries(&env, &user)
+    }
+
+    /// Registers beneficiaries and their allocation percentages (must sum to 100%).
+    pub fn register_beneficiaries(env: Env, user: Address, beneficiaries: Vec<Beneficiary>) {
+        user.require_auth();
+        
+        if !beneficiaries.is_empty() {
+            let mut sum: u32 = 0;
+            for b in beneficiaries.iter() {
+                if b.percentage == 0 {
+                    panic_with_error!(&env, BudgetError::InvalidPercentages);
+                }
+                sum = sum.checked_add(b.percentage).unwrap_or_else(|| panic_with_error!(&env, BudgetError::InvalidPercentages));
+            }
+            if sum != 100 {
+                panic_with_error!(&env, BudgetError::InvalidPercentages);
+            }
+        }
+        
+        storage::set_beneficiaries(&env, &user, &beneficiaries);
+        storage::set_last_activity(&env, &user, env.ledger().timestamp());
+        BudgetEvents::beneficiaries_updated(&env, &user);
+    }
+
+    /// Gets registered beneficiaries with allocation percentages.
+    pub fn get_beneficiaries(env: Env, user: Address) -> Vec<Beneficiary> {
+        storage::get_beneficiaries(&env, &user)
+    }
+
+    /// Claims ownership of a budget if the owner has been inactive.
+    pub fn claim_ownership(env: Env, beneficiary: Address, owner: Address) {
+        beneficiary.require_auth();
+        
+        let inheritance = storage::get_inheritance_beneficiaries(&env, &owner);
+        let mut is_beneficiary = false;
+        for addr in inheritance.iter() {
+            if addr == beneficiary {
+                is_beneficiary = true;
+                break;
+            }
+        }
+        if !is_beneficiary {
+            panic_with_error!(&env, BudgetError::NotABeneficiary);
+        }
+
+        let last_activity = Self::get_last_activity_time(&env, &owner);
+        if last_activity == 0 {
+            panic_with_error!(&env, BudgetError::BudgetNotFound);
+        }
+
+        let timeout = storage::get_inactivity_timeout(&env, &owner);
+        let now = env.ledger().timestamp();
+        if now < last_activity.checked_add(timeout).unwrap_or(u64::MAX) {
+            panic_with_error!(&env, BudgetError::InactivityPeriodNotElapsed);
+        }
+
+        Self::transfer_budget_ownership(&env, &owner, &beneficiary);
+        BudgetEvents::ownership_transferred(&env, &owner, &beneficiary, now);
+    }
+
+    /// Distributes remaining funds to registered percentage beneficiaries.
+    pub fn distribute_remaining_funds(env: Env, caller: Address, owner: Address) {
+        caller.require_auth();
+
+        let last_activity = Self::get_last_activity_time(&env, &owner);
+        if last_activity == 0 {
+            panic_with_error!(&env, BudgetError::BudgetNotFound);
+        }
+
+        let timeout = storage::get_inactivity_timeout(&env, &owner);
+        let now = env.ledger().timestamp();
+        if now < last_activity.checked_add(timeout).unwrap_or(u64::MAX) {
+            panic_with_error!(&env, BudgetError::InactivityPeriodNotElapsed);
+        }
+
+        let beneficiaries = storage::get_beneficiaries(&env, &owner);
+        if beneficiaries.is_empty() {
+            panic_with_error!(&env, BudgetError::NotABeneficiary);
+        }
+
+        let admin = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin).expect("Not initialized");
+        let mut is_authorized = caller == admin;
+        for b in beneficiaries.iter() {
+            if b.address == caller {
+                is_authorized = true;
+                break;
+            }
+        }
+        if !is_authorized {
+            panic_with_error!(&env, BudgetError::Unauthorized);
+        }
+
+        for b in beneficiaries.iter() {
+            let percentage = b.percentage;
+            
+            // 1. BudgetRecord (Default/Native asset)
+            if let Some(owner_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::Budget(owner.clone())) {
+                let share = owner_record.amount.checked_mul(percentage as i128).unwrap_or(0) / 100;
+                if share > 0 {
+                    if let Some(mut existing_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::Budget(b.address.clone())) {
+                        existing_record.amount = existing_record.amount.checked_add(share).unwrap_or(existing_record.amount);
+                        existing_record.last_updated = now;
+                        env.storage().persistent().set(&DataKey::Budget(b.address.clone()), &existing_record);
+                    } else {
+                        env.storage().persistent().set(
+                            &DataKey::Budget(b.address.clone()),
+                            &BudgetRecord {
+                                user: b.address.clone(),
+                                amount: share,
+                                asset: None,
+                                last_updated: now,
+                            },
+                        );
+                    }
+                    BudgetEvents::funds_distributed(&env, &owner, &b.address, share, &None, now);
+                }
+            }
+
+            // 2. BudgetAsset (Multi-asset budgets)
+            let owner_assets = env.storage().persistent().get::<DataKey, Vec<Address>>(&DataKey::UserAssets(owner.clone()))
+                .unwrap_or_else(|| Vec::new(&env));
+            
+            for asset in owner_assets.iter() {
+                if let Some(owner_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(owner.clone(), asset.clone())) {
+                    let share = owner_record.amount.checked_mul(percentage as i128).unwrap_or(0) / 100;
+                    if share > 0 {
+                        if let Some(mut existing_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(b.address.clone(), asset.clone())) {
+                            existing_record.amount = existing_record.amount.checked_add(share).unwrap_or(existing_record.amount);
+                            existing_record.last_updated = now;
+                            env.storage().persistent().set(&DataKey::BudgetAsset(b.address.clone(), asset.clone()), &existing_record);
+                        } else {
+                            env.storage().persistent().set(
+                                &DataKey::BudgetAsset(b.address.clone(), asset.clone()),
+                                &BudgetRecord {
+                                    user: b.address.clone(),
+                                    amount: share,
+                                    asset: Some(asset.clone()),
+                                    last_updated: now,
+                                },
+                            );
+                        }
+
+                        let mut b_assets = env.storage().persistent().get::<DataKey, Vec<Address>>(&DataKey::UserAssets(b.address.clone()))
+                            .unwrap_or_else(|| Vec::new(&env));
+                        if !b_assets.contains(&asset) {
+                            b_assets.push_back(asset.clone());
+                            env.storage().persistent().set(&DataKey::UserAssets(b.address.clone()), &b_assets);
+                        }
+
+                        BudgetEvents::funds_distributed(&env, &owner, &b.address, share, &Some(asset.clone()), now);
+                    }
+                }
+            }
+
+            // 3. UserBudget (Category budgets)
+            if let Some(owner_user_budget) = storage::get_user_budget(&env, &owner) {
+                let mut b_user_budget = storage::get_user_budget(&env, &b.address).unwrap_or_else(|| UserBudget {
+                    user: b.address.clone(),
+                    categories: Map::new(&env),
+                    last_updated: now,
+                });
+
+                for (_, cat) in owner_user_budget.categories.iter() {
+                    let limit_share = cat.limit.checked_mul(percentage as i128).unwrap_or(0) / 100;
+                    let spent_share = cat.spent.checked_mul(percentage as i128).unwrap_or(0) / 100;
+
+                    if limit_share > 0 {
+                        if let Some(mut existing_cat) = b_user_budget.categories.get(cat.name.clone()) {
+                            existing_cat.limit = existing_cat.limit.checked_add(limit_share).unwrap_or(existing_cat.limit);
+                            existing_cat.spent = existing_cat.spent.checked_add(spent_share).unwrap_or(existing_cat.spent);
+                            b_user_budget.categories.set(cat.name.clone(), existing_cat);
+                        } else {
+                            b_user_budget.categories.set(
+                                cat.name.clone(),
+                                CategoryBudget {
+                                    name: cat.name.clone(),
+                                    limit: limit_share,
+                                    spent: spent_share,
+                                },
+                            );
+                        }
+                    }
+                }
+
+                b_user_budget.last_updated = now;
+                storage::set_user_budget(&env, &b_user_budget);
+            }
+        }
+
+        // Cleanup owner's budget and configuration completely after distribution
+        env.storage().persistent().remove(&DataKey::Budget(owner.clone()));
+
+        let owner_assets = env.storage().persistent().get::<DataKey, Vec<Address>>(&DataKey::UserAssets(owner.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        for asset in owner_assets.iter() {
+            env.storage().persistent().remove(&DataKey::BudgetAsset(owner.clone(), asset));
+        }
+        env.storage().persistent().remove(&DataKey::UserAssets(owner.clone()));
+
+        env.storage().persistent().remove(&DataKey::UserBudget(owner.clone()));
+        storage::clear_budget_freeze(&env, &owner);
+        env.storage().persistent().remove(&DataKey::SpendingWindow(owner.clone()));
+        env.storage().persistent().remove(&DataKey::UserTransfers(owner.clone()));
+        env.storage().persistent().remove(&DataKey::LastActivity(owner.clone()));
+        env.storage().persistent().remove(&DataKey::InactivityTimeout(owner.clone()));
+        env.storage().persistent().remove(&DataKey::InheritanceBeneficiaries(owner.clone()));
+        env.storage().persistent().remove(&DataKey::Beneficiaries(owner.clone()));
+    }
+
+    fn get_last_activity_time(env: &Env, user: &Address) -> u64 {
+        let stored = storage::get_last_activity(env, user);
+        if stored > 0 {
+            return stored;
+        }
+        if let Some(record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::Budget(user.clone())) {
+            return record.last_updated;
+        }
+        if let Some(budget) = storage::get_user_budget(env, user) {
+            return budget.last_updated;
+        }
+        0
+    }
+
+    fn transfer_budget_ownership(env: &Env, old_owner: &Address, new_owner: &Address) {
+        let now = env.ledger().timestamp();
+
+        // 1. BudgetRecord (Default/Native asset)
+        if let Some(mut record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::Budget(old_owner.clone())) {
+            record.user = new_owner.clone();
+            record.last_updated = now;
+            
+            if let Some(mut existing_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::Budget(new_owner.clone())) {
+                existing_record.amount = existing_record.amount.checked_add(record.amount).unwrap_or(existing_record.amount);
+                existing_record.last_updated = now;
+                env.storage().persistent().set(&DataKey::Budget(new_owner.clone()), &existing_record);
+            } else {
+                env.storage().persistent().set(&DataKey::Budget(new_owner.clone()), &record);
+            }
+            env.storage().persistent().remove(&DataKey::Budget(old_owner.clone()));
+        }
+
+        // 2. BudgetAsset (Multi-asset budgets)
+        let old_assets = env.storage().persistent().get::<DataKey, Vec<Address>>(&DataKey::UserAssets(old_owner.clone()))
+            .unwrap_or_else(|| Vec::new(env));
+            
+        let mut new_assets = env.storage().persistent().get::<DataKey, Vec<Address>>(&DataKey::UserAssets(new_owner.clone()))
+            .unwrap_or_else(|| Vec::new(env));
+
+        for asset in old_assets.iter() {
+            if let Some(mut record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(old_owner.clone(), asset.clone())) {
+                record.user = new_owner.clone();
+                record.last_updated = now;
+
+                if let Some(mut existing_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(new_owner.clone(), asset.clone())) {
+                    existing_record.amount = existing_record.amount.checked_add(record.amount).unwrap_or(existing_record.amount);
+                    existing_record.last_updated = now;
+                    env.storage().persistent().set(&DataKey::BudgetAsset(new_owner.clone(), asset.clone()), &existing_record);
+                } else {
+                    env.storage().persistent().set(&DataKey::BudgetAsset(new_owner.clone(), asset.clone()), &record);
+                }
+                env.storage().persistent().remove(&DataKey::BudgetAsset(old_owner.clone(), asset.clone()));
+            }
+
+            if !new_assets.contains(&asset) {
+                new_assets.push_back(asset.clone());
+            }
+        }
+        
+        if new_assets.len() > 0 {
+            env.storage().persistent().set(&DataKey::UserAssets(new_owner.clone()), &new_assets);
+        }
+        env.storage().persistent().remove(&DataKey::UserAssets(old_owner.clone()));
+
+        // 3. UserBudget (Category budgets)
+        if let Some(mut old_user_budget) = storage::get_user_budget(env, old_owner) {
+            old_user_budget.user = new_owner.clone();
+            old_user_budget.last_updated = now;
+
+            if let Some(mut new_user_budget) = storage::get_user_budget(env, new_owner) {
+                for (_, cat) in old_user_budget.categories.iter() {
+                    if let Some(mut existing_cat) = new_user_budget.categories.get(cat.name.clone()) {
+                        existing_cat.limit = existing_cat.limit.checked_add(cat.limit).unwrap_or(existing_cat.limit);
+                        existing_cat.spent = existing_cat.spent.checked_add(cat.spent).unwrap_or(existing_cat.spent);
+                        new_user_budget.categories.set(cat.name.clone(), existing_cat);
+                    } else {
+                        new_user_budget.categories.set(cat.name.clone(), cat.clone());
+                    }
+                }
+                new_user_budget.last_updated = now;
+                storage::set_user_budget(env, &new_user_budget);
+            } else {
+                storage::set_user_budget(env, &old_user_budget);
+            }
+            env.storage().persistent().remove(&DataKey::UserBudget(old_owner.clone()));
+        }
+
+        // 4. BudgetFreeze
+        if let Some(freeze) = storage::get_budget_freeze(env, old_owner) {
+            storage::set_budget_freeze(env, new_owner, &freeze);
+            storage::clear_budget_freeze(env, old_owner);
+        }
+
+        // 5. SpendingWindow
+        if let Some(window) = env.storage().persistent().get::<DataKey, SpendingWindow>(&DataKey::SpendingWindow(old_owner.clone())) {
+            env.storage().persistent().set(&DataKey::SpendingWindow(new_owner.clone()), &window);
+            env.storage().persistent().remove(&DataKey::SpendingWindow(old_owner.clone()));
+        }
+
+        // 6. UserTransfers
+        if let Some(transfers) = env.storage().persistent().get::<DataKey, Vec<u64>>(&DataKey::UserTransfers(old_owner.clone())) {
+            env.storage().persistent().set(&DataKey::UserTransfers(new_owner.clone()), &transfers);
+            env.storage().persistent().remove(&DataKey::UserTransfers(old_owner.clone()));
+        }
+
+        // 7. Cleanup old configurations
+        env.storage().persistent().remove(&DataKey::LastActivity(old_owner.clone()));
+        env.storage().persistent().remove(&DataKey::InactivityTimeout(old_owner.clone()));
+        env.storage().persistent().remove(&DataKey::InheritanceBeneficiaries(old_owner.clone()));
+        env.storage().persistent().remove(&DataKey::Beneficiaries(old_owner.clone()));
+
+        // Initialize new owner activity
+        storage::set_last_activity(env, new_owner, now);
     }
 
     fn freeze_for_suspicious_activity(env: &Env, user: &Address, now: u64) {

@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use super::{BudgetContract, BudgetContractClient};
+use super::{BudgetContract, BudgetContractClient, Beneficiary};
 use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol};
 
 fn setup() -> (Env, Address, Address, BudgetContractClient<'static>) {
@@ -151,4 +151,86 @@ fn test_transfer_history_preserved() {
     assert_eq!(first.amount, 100);
     let second = client.get_transfer(&2);
     assert_eq!(second.amount, 50);
+}
+
+#[test]
+fn test_inactivity_timeout_and_ownership_transfer() {
+    let (env, admin, owner, client) = setup();
+    let beneficiary = Address::generate(&env);
+
+    client.update_budget(&admin, &owner, &1_000, &None);
+    client.set_category_budget(&admin, &owner, &symbol_short!("food"), &1_000);
+
+    let inheritance = soroban_sdk::vec![&env, beneficiary.clone()];
+    client.register_inheritance_beneficiaries(&owner, &inheritance);
+
+    client.set_inactivity_timeout(&owner, &10);
+
+    // Let's advance ledger timestamp by 15 seconds
+    env.ledger().set_timestamp(15);
+
+    client.claim_ownership(&beneficiary, &owner);
+
+    // Ownership should be transferred
+    assert_eq!(client.get_budget(&beneficiary).unwrap().amount, 1_000);
+    assert!(client.get_budget(&owner).is_none());
+
+    // Category should be transferred
+    assert_eq!(client.get_category_balance(&beneficiary, &symbol_short!("food")), 1_000);
+}
+
+#[test]
+fn test_distribute_remaining_funds() {
+    let (env, admin, owner, client) = setup();
+    let beneficiary1 = Address::generate(&env);
+    let beneficiary2 = Address::generate(&env);
+
+    client.update_budget(&admin, &owner, &1_000, &None);
+
+    let beneficiaries = soroban_sdk::vec![
+        &env,
+        Beneficiary {
+            address: beneficiary1.clone(),
+            percentage: 60,
+        },
+        Beneficiary {
+            address: beneficiary2.clone(),
+            percentage: 40,
+        }
+    ];
+
+    client.register_beneficiaries(&owner, &beneficiaries);
+    client.set_inactivity_timeout(&owner, &10);
+
+    // Advance timestamp
+    env.ledger().set_timestamp(15);
+
+    client.distribute_remaining_funds(&beneficiary1, &owner);
+
+    // Check balances/budgets
+    assert_eq!(client.get_budget(&beneficiary1).unwrap().amount, 600);
+    assert_eq!(client.get_budget(&beneficiary2).unwrap().amount, 400);
+    assert!(client.get_budget(&owner).is_none());
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn test_register_beneficiaries_invalid_percentages() {
+    let (env, _, owner, client) = setup();
+    let beneficiary1 = Address::generate(&env);
+    let beneficiary2 = Address::generate(&env);
+
+    let beneficiaries = soroban_sdk::vec![
+        &env,
+        Beneficiary {
+            address: beneficiary1,
+            percentage: 50,
+        },
+        Beneficiary {
+            address: beneficiary2,
+            percentage: 40, // 50 + 40 = 90 (not 100)
+        }
+    ];
+
+    client.register_beneficiaries(&owner, &beneficiaries);
 }
