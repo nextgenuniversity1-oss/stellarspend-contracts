@@ -14,6 +14,7 @@ members = [
     "contracts/batch-payment",
     "contracts/batch-payment-reminders",
     "contracts/batch-wallet-creation",
+    "contracts/budget",
     "contracts/budget-recommendations",
     "contracts/fee",
     "contracts/shared-budgets",
@@ -29,8 +30,10 @@ members = [
     "contracts/asset_control",
     "contracts/access-control",
     "contracts/category-analytics",
+    "contracts/spending-categories",
     "contracts/users",
     "contracts/transactions",
+    "contracts/transaction-validation",
 ]
 
 [package]

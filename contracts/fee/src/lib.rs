@@ -2,21 +2,22 @@
 
 extern crate alloc;
 
+mod auth;
 mod decay;
 mod escrow;
 mod events;
+mod fee_validation;
 mod reconciliation;
 mod storage;
 mod utils;
-mod fee_validation;
 mod validation;
-mod auth;
 
 #[cfg(test)]
 mod test;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Vec};
 
+use crate::auth::require_admin;
 use crate::decay::calculate_fee_decay;
 use crate::escrow::{
     collect_batch_to_escrow, collect_to_escrow, release_cycle_fees, rollover_cycle_fees,
@@ -25,18 +26,17 @@ use crate::events::{ConfigEvents, FeeEvents};
 use crate::reconciliation::reconcile;
 pub use crate::reconciliation::ReconciliationResult;
 use crate::storage::{
-    has_admin, read_admin, read_current_cycle, read_escrow_balance, read_fee_bps,
-    read_last_active, read_locked, read_min_fee, read_pending_fees, read_token,
-    read_total_batch_calls, read_total_collected, read_total_released, read_treasury,
-    write_admin, write_current_cycle, write_fee_bps,
-    write_max_fee, read_max_fee,
-    write_last_active, write_locked, write_min_fee, write_token, write_treasury,
-    DEFAULT_FEE_BPS, DEFAULT_MIN_FEE,
+    has_admin, read_admin, read_current_cycle, read_escrow_balance, read_fee_bps, read_last_active,
+    read_locked, read_max_fee, read_min_fee, read_pending_fees, read_token, read_total_batch_calls,
+    read_total_collected, read_total_released, read_treasury, write_admin, write_current_cycle,
+    write_fee_bps, write_last_active, write_locked, write_max_fee, write_min_fee, write_token,
+    write_treasury, FeeConfig, FeeStats, DEFAULT_FEE_BPS, DEFAULT_MAX_FEE, DEFAULT_MIN_FEE,
 };
 pub use crate::storage::{BatchFeeResult, DataKey, MAX_BATCH_SIZE, MAX_FEE_BPS};
-use crate::auth::require_admin;
-use crate::validation::{validate_fee_bps_or_panic, validate_min_fee_or_panic, validate_max_fee_or_panic, validate_amount_positive_or_panic};
-
+use crate::validation::{
+    validate_amount_positive_or_panic, validate_fee_bps_or_panic, validate_max_fee_or_panic,
+    validate_min_fee_or_panic,
+};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -82,17 +82,37 @@ impl FeeContract {
         }
         validate_fee_percentage_bounds(&env, fee_bps);
 
-        write_admin(&env, &admin);
-        write_token(&env, &token);
-        write_treasury(&env, &treasury);
-        write_fee_bps(&env, fee_bps);
-        write_locked(&env, false);
-        write_current_cycle(&env, initial_cycle);
+        // Storage optimization (#484): write FeeConfig once instead of 6
+        // separate storage operations.
+        let config = FeeConfig {
+            admin,
+            token,
+            treasury,
+            fee_bps,
+            min_fee: DEFAULT_MIN_FEE,
+            max_fee: DEFAULT_MAX_FEE,
+            is_locked: false,
+            current_cycle: initial_cycle,
+        };
+        env.storage().instance().set(&DataKey::FeeConfig, &config);
+
+        // Initialize stats.
+        let stats = FeeStats {
+            escrow_balance: 0,
+            total_collected: 0,
+            total_released: 0,
+            total_batch_calls: 0,
+        };
+        env.storage().instance().set(&DataKey::FeeStats, &stats);
     }
 
     /// Initializes the contract with default fee configuration:
     /// - Fee: 3.00% (300 BPS)
     /// - Initial Cycle: 1
+    ///
+    /// # Storage Optimization (#484)
+    /// Writes FeeConfig and FeeStats in 2 operations instead of 10+ separate
+    /// storage writes, reducing Soroban storage I/O overhead.
     pub fn init(env: Env, admin: Address, token: Address, treasury: Address) {
         Self::initialize(env, admin, token, treasury, 300, 1);
     }
