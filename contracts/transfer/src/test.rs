@@ -18,10 +18,10 @@ fn test_clean_description_passes() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
     let amount = 100;
-    
+
     // Clean description remains unchanged and execution passes
     let clean_desc = String::from_str(&env, "Payment for dinner.");
-    
+
     // Result should be Ok(())
     client.execute_transfer(&from, &to, &amount, &clean_desc);
 }
@@ -33,10 +33,10 @@ fn test_invalid_characters_rejected() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
     let amount = 100;
-    
+
     // Description containing invalid characters (e.g., emojis or unsupported symbols)
     let invalid_desc = String::from_str(&env, "Payment 🎉");
-    
+
     // This should panic with the SharedError::InvalidInput error code (3)
     client.execute_transfer(&from, &to, &amount, &invalid_desc);
 }
@@ -48,7 +48,7 @@ fn test_html_tags_rejected() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
     let amount = 100;
-    
+
     let html_desc = String::from_str(&env, "<script>alert('xss')</script>");
     client.execute_transfer(&from, &to, &amount, &html_desc);
 }
@@ -59,9 +59,9 @@ fn test_empty_description_passes() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
     let amount = 100;
-    
+
     let empty_desc = String::from_str(&env, "");
-    
+
     // Empty strings shouldn't fail
     client.execute_transfer(&from, &to, &amount, &empty_desc);
 }

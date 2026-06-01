@@ -301,9 +301,7 @@ impl SpendingLimitsContract {
 
     /// Returns the current escalation configuration.
     pub fn get_escalation_config(env: Env) -> Option<EscalationConfig> {
-        env.storage()
-            .instance()
-            .get(&DataKey::EscalationConfig)
+        env.storage().instance().get(&DataKey::EscalationConfig)
     }
 
     /// Admin approves a large spend that was escalated.
@@ -324,7 +322,10 @@ impl SpendingLimitsContract {
             None => panic_with_error!(&env, SpendingLimitError::InvalidAmount),
         };
 
-        limit.current_spending = limit.current_spending.checked_add(amount).unwrap_or(i128::MAX);
+        limit.current_spending = limit
+            .current_spending
+            .checked_add(amount)
+            .unwrap_or(i128::MAX);
         limit.updated_at = env.ledger().timestamp();
 
         env.storage()

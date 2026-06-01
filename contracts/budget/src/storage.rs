@@ -58,6 +58,17 @@ pub struct SpendingWindow {
     pub timestamps: Vec<u64>,
 }
 
+/// Budget template for reusable category configurations.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BudgetTemplate {
+    pub id: Symbol,
+    pub name: Symbol,
+    pub categories: Map<Symbol, CategoryBudget>,
+    pub created_by: Address,
+    pub created_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
@@ -78,6 +89,8 @@ pub enum DataKey {
     InactivityTimeout(Address),
     InheritanceBeneficiaries(Address),
     Beneficiaries(Address),
+    Template(Symbol),
+    UserTemplates(Address),
 }
 
 pub fn get_user_budget(env: &Env, user: &Address) -> Option<UserBudget> {
@@ -264,9 +277,10 @@ pub fn get_inheritance_beneficiaries(env: &Env, user: &Address) -> Vec<Address> 
 }
 
 pub fn set_inheritance_beneficiaries(env: &Env, user: &Address, beneficiaries: &Vec<Address>) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::InheritanceBeneficiaries(user.clone()), beneficiaries);
+    env.storage().persistent().set(
+        &DataKey::InheritanceBeneficiaries(user.clone()),
+        beneficiaries,
+    );
 }
 
 pub fn get_beneficiaries(env: &Env, user: &Address) -> Vec<crate::types::Beneficiary> {
@@ -276,8 +290,72 @@ pub fn get_beneficiaries(env: &Env, user: &Address) -> Vec<crate::types::Benefic
         .unwrap_or_else(|| Vec::new(env))
 }
 
-pub fn set_beneficiaries(env: &Env, user: &Address, beneficiaries: &Vec<crate::types::Beneficiary>) {
+pub fn set_beneficiaries(
+    env: &Env,
+    user: &Address,
+    beneficiaries: &Vec<crate::types::Beneficiary>,
+) {
     env.storage()
         .persistent()
         .set(&DataKey::Beneficiaries(user.clone()), beneficiaries);
+}
+
+pub fn save_template(env: &Env, template: &BudgetTemplate) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Template(template.id.clone()), template);
+
+    let mut user_templates: Vec<Symbol> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::UserTemplates(template.created_by.clone()))
+        .unwrap_or_else(|| Vec::new(env));
+
+    if !user_templates.contains(&template.id) {
+        user_templates.push_back(template.id.clone());
+        env.storage().persistent().set(
+            &DataKey::UserTemplates(template.created_by.clone()),
+            &user_templates,
+        );
+    }
+}
+
+pub fn get_template(env: &Env, template_id: Symbol) -> Option<BudgetTemplate> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Template(template_id))
+}
+
+pub fn get_user_templates(env: &Env, user: &Address) -> Vec<Symbol> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserTemplates(user.clone()))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn delete_template(env: &Env, template_id: Symbol, user: &Address) {
+    if let Some(template) = get_template(env, template_id.clone()) {
+        if template.created_by == *user {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Template(template_id.clone()));
+
+            let user_templates = get_user_templates(env, user);
+            let mut new_templates = Vec::new(env);
+            for id in user_templates.iter() {
+                if id != template_id {
+                    new_templates.push_back(id);
+                }
+            }
+            if new_templates.len() > 0 {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::UserTemplates(user.clone()), &new_templates);
+            } else {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::UserTemplates(user.clone()));
+            }
+        }
+    }
 }

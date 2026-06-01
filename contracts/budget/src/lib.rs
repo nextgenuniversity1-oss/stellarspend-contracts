@@ -7,9 +7,9 @@
 #![no_std]
 
 mod storage;
-mod types;
 #[cfg(test)]
 mod test;
+mod types;
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Map,
@@ -17,17 +17,17 @@ use soroban_sdk::{
 };
 
 pub use storage::{
-    BudgetFreeze, CategoryBudget, CategoryTransfer, DataKey, SpendingWindow, UserBudget,
-    DEFAULT_FREEZE_DURATION_SECONDS, RAPID_SPEND_THRESHOLD, RAPID_SPEND_WINDOW_SECONDS,
+    BudgetFreeze, BudgetTemplate, CategoryBudget, CategoryTransfer, DataKey, SpendingWindow,
+    UserBudget, DEFAULT_FREEZE_DURATION_SECONDS, RAPID_SPEND_THRESHOLD, RAPID_SPEND_WINDOW_SECONDS,
 };
 
 pub use types::Beneficiary;
 
 use storage::{
-    clear_budget_freeze, get_budget_freeze, get_category_available, get_transfer,
-    get_user_budget as load_user_budget, get_user_transfers, increment_suspicious_count,
-    is_budget_frozen, next_transfer_id, record_spend_timestamp, record_transfer, set_budget_freeze,
-    set_user_budget,
+    clear_budget_freeze, delete_template, get_budget_freeze, get_category_available, get_template,
+    get_transfer, get_user_budget as load_user_budget, get_user_templates, get_user_transfers,
+    increment_suspicious_count, is_budget_frozen, next_transfer_id, record_spend_timestamp,
+    record_transfer, save_template, set_budget_freeze, set_user_budget,
 };
 
 /// Deletion cooldown period in seconds (24 hours).
@@ -142,7 +142,12 @@ impl BudgetEvents {
         );
     }
 
-    pub fn ownership_transferred(env: &Env, old_owner: &Address, new_owner: &Address, timestamp: u64) {
+    pub fn ownership_transferred(
+        env: &Env,
+        old_owner: &Address,
+        new_owner: &Address,
+        timestamp: u64,
+    ) {
         env.events().publish(
             (symbol_short!("budget"), symbol_short!("own_trsf")),
             (old_owner.clone(), new_owner.clone(), timestamp),
@@ -173,7 +178,13 @@ impl BudgetEvents {
     ) {
         env.events().publish(
             (symbol_short!("budget"), symbol_short!("distrib")),
-            (owner.clone(), beneficiary.clone(), amount, asset.clone(), timestamp),
+            (
+                owner.clone(),
+                beneficiary.clone(),
+                amount,
+                asset.clone(),
+                timestamp,
+            ),
         );
     }
 }
@@ -694,7 +705,11 @@ impl BudgetContract {
     }
 
     /// Registers inheritance beneficiaries for ownership transfer.
-    pub fn register_inheritance_beneficiaries(env: Env, user: Address, beneficiaries: Vec<Address>) {
+    pub fn register_inheritance_beneficiaries(
+        env: Env,
+        user: Address,
+        beneficiaries: Vec<Address>,
+    ) {
         user.require_auth();
         storage::set_inheritance_beneficiaries(&env, &user, &beneficiaries);
         storage::set_last_activity(&env, &user, env.ledger().timestamp());
@@ -709,20 +724,22 @@ impl BudgetContract {
     /// Registers beneficiaries and their allocation percentages (must sum to 100%).
     pub fn register_beneficiaries(env: Env, user: Address, beneficiaries: Vec<Beneficiary>) {
         user.require_auth();
-        
+
         if !beneficiaries.is_empty() {
             let mut sum: u32 = 0;
             for b in beneficiaries.iter() {
                 if b.percentage == 0 {
                     panic_with_error!(&env, BudgetError::InvalidPercentages);
                 }
-                sum = sum.checked_add(b.percentage).unwrap_or_else(|| panic_with_error!(&env, BudgetError::InvalidPercentages));
+                sum = sum
+                    .checked_add(b.percentage)
+                    .unwrap_or_else(|| panic_with_error!(&env, BudgetError::InvalidPercentages));
             }
             if sum != 100 {
                 panic_with_error!(&env, BudgetError::InvalidPercentages);
             }
         }
-        
+
         storage::set_beneficiaries(&env, &user, &beneficiaries);
         storage::set_last_activity(&env, &user, env.ledger().timestamp());
         BudgetEvents::beneficiaries_updated(&env, &user);
@@ -736,7 +753,7 @@ impl BudgetContract {
     /// Claims ownership of a budget if the owner has been inactive.
     pub fn claim_ownership(env: Env, beneficiary: Address, owner: Address) {
         beneficiary.require_auth();
-        
+
         let inheritance = storage::get_inheritance_beneficiaries(&env, &owner);
         let mut is_beneficiary = false;
         for addr in inheritance.iter() {
@@ -784,7 +801,11 @@ impl BudgetContract {
             panic_with_error!(&env, BudgetError::NotABeneficiary);
         }
 
-        let admin = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin).expect("Not initialized");
+        let admin = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+            .expect("Not initialized");
         let mut is_authorized = caller == admin;
         for b in beneficiaries.iter() {
             if b.address == caller {
@@ -798,15 +819,32 @@ impl BudgetContract {
 
         for b in beneficiaries.iter() {
             let percentage = b.percentage;
-            
+
             // 1. BudgetRecord (Default/Native asset)
-            if let Some(owner_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::Budget(owner.clone())) {
-                let share = owner_record.amount.checked_mul(percentage as i128).unwrap_or(0) / 100;
+            if let Some(owner_record) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, BudgetRecord>(&DataKey::Budget(owner.clone()))
+            {
+                let share = owner_record
+                    .amount
+                    .checked_mul(percentage as i128)
+                    .unwrap_or(0)
+                    / 100;
                 if share > 0 {
-                    if let Some(mut existing_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::Budget(b.address.clone())) {
-                        existing_record.amount = existing_record.amount.checked_add(share).unwrap_or(existing_record.amount);
+                    if let Some(mut existing_record) = env
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, BudgetRecord>(&DataKey::Budget(b.address.clone()))
+                    {
+                        existing_record.amount = existing_record
+                            .amount
+                            .checked_add(share)
+                            .unwrap_or(existing_record.amount);
                         existing_record.last_updated = now;
-                        env.storage().persistent().set(&DataKey::Budget(b.address.clone()), &existing_record);
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::Budget(b.address.clone()), &existing_record);
                     } else {
                         env.storage().persistent().set(
                             &DataKey::Budget(b.address.clone()),
@@ -823,17 +861,41 @@ impl BudgetContract {
             }
 
             // 2. BudgetAsset (Multi-asset budgets)
-            let owner_assets = env.storage().persistent().get::<DataKey, Vec<Address>>(&DataKey::UserAssets(owner.clone()))
+            let owner_assets = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Vec<Address>>(&DataKey::UserAssets(owner.clone()))
                 .unwrap_or_else(|| Vec::new(&env));
-            
+
             for asset in owner_assets.iter() {
-                if let Some(owner_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(owner.clone(), asset.clone())) {
-                    let share = owner_record.amount.checked_mul(percentage as i128).unwrap_or(0) / 100;
+                if let Some(owner_record) =
+                    env.storage()
+                        .persistent()
+                        .get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(
+                            owner.clone(),
+                            asset.clone(),
+                        ))
+                {
+                    let share = owner_record
+                        .amount
+                        .checked_mul(percentage as i128)
+                        .unwrap_or(0)
+                        / 100;
                     if share > 0 {
-                        if let Some(mut existing_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(b.address.clone(), asset.clone())) {
-                            existing_record.amount = existing_record.amount.checked_add(share).unwrap_or(existing_record.amount);
+                        if let Some(mut existing_record) =
+                            env.storage().persistent().get::<DataKey, BudgetRecord>(
+                                &DataKey::BudgetAsset(b.address.clone(), asset.clone()),
+                            )
+                        {
+                            existing_record.amount = existing_record
+                                .amount
+                                .checked_add(share)
+                                .unwrap_or(existing_record.amount);
                             existing_record.last_updated = now;
-                            env.storage().persistent().set(&DataKey::BudgetAsset(b.address.clone(), asset.clone()), &existing_record);
+                            env.storage().persistent().set(
+                                &DataKey::BudgetAsset(b.address.clone(), asset.clone()),
+                                &existing_record,
+                            );
                         } else {
                             env.storage().persistent().set(
                                 &DataKey::BudgetAsset(b.address.clone(), asset.clone()),
@@ -846,34 +908,55 @@ impl BudgetContract {
                             );
                         }
 
-                        let mut b_assets = env.storage().persistent().get::<DataKey, Vec<Address>>(&DataKey::UserAssets(b.address.clone()))
+                        let mut b_assets = env
+                            .storage()
+                            .persistent()
+                            .get::<DataKey, Vec<Address>>(&DataKey::UserAssets(b.address.clone()))
                             .unwrap_or_else(|| Vec::new(&env));
                         if !b_assets.contains(&asset) {
                             b_assets.push_back(asset.clone());
-                            env.storage().persistent().set(&DataKey::UserAssets(b.address.clone()), &b_assets);
+                            env.storage()
+                                .persistent()
+                                .set(&DataKey::UserAssets(b.address.clone()), &b_assets);
                         }
 
-                        BudgetEvents::funds_distributed(&env, &owner, &b.address, share, &Some(asset.clone()), now);
+                        BudgetEvents::funds_distributed(
+                            &env,
+                            &owner,
+                            &b.address,
+                            share,
+                            &Some(asset.clone()),
+                            now,
+                        );
                     }
                 }
             }
 
             // 3. UserBudget (Category budgets)
             if let Some(owner_user_budget) = storage::get_user_budget(&env, &owner) {
-                let mut b_user_budget = storage::get_user_budget(&env, &b.address).unwrap_or_else(|| UserBudget {
-                    user: b.address.clone(),
-                    categories: Map::new(&env),
-                    last_updated: now,
-                });
+                let mut b_user_budget =
+                    storage::get_user_budget(&env, &b.address).unwrap_or_else(|| UserBudget {
+                        user: b.address.clone(),
+                        categories: Map::new(&env),
+                        last_updated: now,
+                    });
 
                 for (_, cat) in owner_user_budget.categories.iter() {
                     let limit_share = cat.limit.checked_mul(percentage as i128).unwrap_or(0) / 100;
                     let spent_share = cat.spent.checked_mul(percentage as i128).unwrap_or(0) / 100;
 
                     if limit_share > 0 {
-                        if let Some(mut existing_cat) = b_user_budget.categories.get(cat.name.clone()) {
-                            existing_cat.limit = existing_cat.limit.checked_add(limit_share).unwrap_or(existing_cat.limit);
-                            existing_cat.spent = existing_cat.spent.checked_add(spent_share).unwrap_or(existing_cat.spent);
+                        if let Some(mut existing_cat) =
+                            b_user_budget.categories.get(cat.name.clone())
+                        {
+                            existing_cat.limit = existing_cat
+                                .limit
+                                .checked_add(limit_share)
+                                .unwrap_or(existing_cat.limit);
+                            existing_cat.spent = existing_cat
+                                .spent
+                                .checked_add(spent_share)
+                                .unwrap_or(existing_cat.spent);
                             b_user_budget.categories.set(cat.name.clone(), existing_cat);
                         } else {
                             b_user_budget.categories.set(
@@ -894,23 +977,46 @@ impl BudgetContract {
         }
 
         // Cleanup owner's budget and configuration completely after distribution
-        env.storage().persistent().remove(&DataKey::Budget(owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Budget(owner.clone()));
 
-        let owner_assets = env.storage().persistent().get::<DataKey, Vec<Address>>(&DataKey::UserAssets(owner.clone()))
+        let owner_assets = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<Address>>(&DataKey::UserAssets(owner.clone()))
             .unwrap_or_else(|| Vec::new(&env));
         for asset in owner_assets.iter() {
-            env.storage().persistent().remove(&DataKey::BudgetAsset(owner.clone(), asset));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::BudgetAsset(owner.clone(), asset));
         }
-        env.storage().persistent().remove(&DataKey::UserAssets(owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::UserAssets(owner.clone()));
 
-        env.storage().persistent().remove(&DataKey::UserBudget(owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::UserBudget(owner.clone()));
         storage::clear_budget_freeze(&env, &owner);
-        env.storage().persistent().remove(&DataKey::SpendingWindow(owner.clone()));
-        env.storage().persistent().remove(&DataKey::UserTransfers(owner.clone()));
-        env.storage().persistent().remove(&DataKey::LastActivity(owner.clone()));
-        env.storage().persistent().remove(&DataKey::InactivityTimeout(owner.clone()));
-        env.storage().persistent().remove(&DataKey::InheritanceBeneficiaries(owner.clone()));
-        env.storage().persistent().remove(&DataKey::Beneficiaries(owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::SpendingWindow(owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::UserTransfers(owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LastActivity(owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::InactivityTimeout(owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::InheritanceBeneficiaries(owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Beneficiaries(owner.clone()));
     }
 
     fn get_last_activity_time(env: &Env, user: &Address) -> u64 {
@@ -918,7 +1024,11 @@ impl BudgetContract {
         if stored > 0 {
             return stored;
         }
-        if let Some(record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::Budget(user.clone())) {
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, BudgetRecord>(&DataKey::Budget(user.clone()))
+        {
             return record.last_updated;
         }
         if let Some(budget) = storage::get_user_budget(env, user) {
@@ -931,51 +1041,103 @@ impl BudgetContract {
         let now = env.ledger().timestamp();
 
         // 1. BudgetRecord (Default/Native asset)
-        if let Some(mut record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::Budget(old_owner.clone())) {
+        if let Some(mut record) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, BudgetRecord>(&DataKey::Budget(old_owner.clone()))
+        {
             record.user = new_owner.clone();
             record.last_updated = now;
-            
-            if let Some(mut existing_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::Budget(new_owner.clone())) {
-                existing_record.amount = existing_record.amount.checked_add(record.amount).unwrap_or(existing_record.amount);
+
+            if let Some(mut existing_record) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, BudgetRecord>(&DataKey::Budget(new_owner.clone()))
+            {
+                existing_record.amount = existing_record
+                    .amount
+                    .checked_add(record.amount)
+                    .unwrap_or(existing_record.amount);
                 existing_record.last_updated = now;
-                env.storage().persistent().set(&DataKey::Budget(new_owner.clone()), &existing_record);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Budget(new_owner.clone()), &existing_record);
             } else {
-                env.storage().persistent().set(&DataKey::Budget(new_owner.clone()), &record);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Budget(new_owner.clone()), &record);
             }
-            env.storage().persistent().remove(&DataKey::Budget(old_owner.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Budget(old_owner.clone()));
         }
 
         // 2. BudgetAsset (Multi-asset budgets)
-        let old_assets = env.storage().persistent().get::<DataKey, Vec<Address>>(&DataKey::UserAssets(old_owner.clone()))
+        let old_assets = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<Address>>(&DataKey::UserAssets(old_owner.clone()))
             .unwrap_or_else(|| Vec::new(env));
-            
-        let mut new_assets = env.storage().persistent().get::<DataKey, Vec<Address>>(&DataKey::UserAssets(new_owner.clone()))
+
+        let mut new_assets = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<Address>>(&DataKey::UserAssets(new_owner.clone()))
             .unwrap_or_else(|| Vec::new(env));
 
         for asset in old_assets.iter() {
-            if let Some(mut record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(old_owner.clone(), asset.clone())) {
+            if let Some(mut record) =
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(
+                        old_owner.clone(),
+                        asset.clone(),
+                    ))
+            {
                 record.user = new_owner.clone();
                 record.last_updated = now;
 
-                if let Some(mut existing_record) = env.storage().persistent().get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(new_owner.clone(), asset.clone())) {
-                    existing_record.amount = existing_record.amount.checked_add(record.amount).unwrap_or(existing_record.amount);
+                if let Some(mut existing_record) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, BudgetRecord>(&DataKey::BudgetAsset(
+                        new_owner.clone(),
+                        asset.clone(),
+                    ))
+                {
+                    existing_record.amount = existing_record
+                        .amount
+                        .checked_add(record.amount)
+                        .unwrap_or(existing_record.amount);
                     existing_record.last_updated = now;
-                    env.storage().persistent().set(&DataKey::BudgetAsset(new_owner.clone(), asset.clone()), &existing_record);
+                    env.storage().persistent().set(
+                        &DataKey::BudgetAsset(new_owner.clone(), asset.clone()),
+                        &existing_record,
+                    );
                 } else {
-                    env.storage().persistent().set(&DataKey::BudgetAsset(new_owner.clone(), asset.clone()), &record);
+                    env.storage().persistent().set(
+                        &DataKey::BudgetAsset(new_owner.clone(), asset.clone()),
+                        &record,
+                    );
                 }
-                env.storage().persistent().remove(&DataKey::BudgetAsset(old_owner.clone(), asset.clone()));
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::BudgetAsset(old_owner.clone(), asset.clone()));
             }
 
             if !new_assets.contains(&asset) {
                 new_assets.push_back(asset.clone());
             }
         }
-        
+
         if new_assets.len() > 0 {
-            env.storage().persistent().set(&DataKey::UserAssets(new_owner.clone()), &new_assets);
+            env.storage()
+                .persistent()
+                .set(&DataKey::UserAssets(new_owner.clone()), &new_assets);
         }
-        env.storage().persistent().remove(&DataKey::UserAssets(old_owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::UserAssets(old_owner.clone()));
 
         // 3. UserBudget (Category budgets)
         if let Some(mut old_user_budget) = storage::get_user_budget(env, old_owner) {
@@ -984,12 +1146,23 @@ impl BudgetContract {
 
             if let Some(mut new_user_budget) = storage::get_user_budget(env, new_owner) {
                 for (_, cat) in old_user_budget.categories.iter() {
-                    if let Some(mut existing_cat) = new_user_budget.categories.get(cat.name.clone()) {
-                        existing_cat.limit = existing_cat.limit.checked_add(cat.limit).unwrap_or(existing_cat.limit);
-                        existing_cat.spent = existing_cat.spent.checked_add(cat.spent).unwrap_or(existing_cat.spent);
-                        new_user_budget.categories.set(cat.name.clone(), existing_cat);
+                    if let Some(mut existing_cat) = new_user_budget.categories.get(cat.name.clone())
+                    {
+                        existing_cat.limit = existing_cat
+                            .limit
+                            .checked_add(cat.limit)
+                            .unwrap_or(existing_cat.limit);
+                        existing_cat.spent = existing_cat
+                            .spent
+                            .checked_add(cat.spent)
+                            .unwrap_or(existing_cat.spent);
+                        new_user_budget
+                            .categories
+                            .set(cat.name.clone(), existing_cat);
                     } else {
-                        new_user_budget.categories.set(cat.name.clone(), cat.clone());
+                        new_user_budget
+                            .categories
+                            .set(cat.name.clone(), cat.clone());
                     }
                 }
                 new_user_budget.last_updated = now;
@@ -997,7 +1170,9 @@ impl BudgetContract {
             } else {
                 storage::set_user_budget(env, &old_user_budget);
             }
-            env.storage().persistent().remove(&DataKey::UserBudget(old_owner.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::UserBudget(old_owner.clone()));
         }
 
         // 4. BudgetFreeze
@@ -1007,22 +1182,46 @@ impl BudgetContract {
         }
 
         // 5. SpendingWindow
-        if let Some(window) = env.storage().persistent().get::<DataKey, SpendingWindow>(&DataKey::SpendingWindow(old_owner.clone())) {
-            env.storage().persistent().set(&DataKey::SpendingWindow(new_owner.clone()), &window);
-            env.storage().persistent().remove(&DataKey::SpendingWindow(old_owner.clone()));
+        if let Some(window) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, SpendingWindow>(&DataKey::SpendingWindow(old_owner.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::SpendingWindow(new_owner.clone()), &window);
+            env.storage()
+                .persistent()
+                .remove(&DataKey::SpendingWindow(old_owner.clone()));
         }
 
         // 6. UserTransfers
-        if let Some(transfers) = env.storage().persistent().get::<DataKey, Vec<u64>>(&DataKey::UserTransfers(old_owner.clone())) {
-            env.storage().persistent().set(&DataKey::UserTransfers(new_owner.clone()), &transfers);
-            env.storage().persistent().remove(&DataKey::UserTransfers(old_owner.clone()));
+        if let Some(transfers) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<u64>>(&DataKey::UserTransfers(old_owner.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::UserTransfers(new_owner.clone()), &transfers);
+            env.storage()
+                .persistent()
+                .remove(&DataKey::UserTransfers(old_owner.clone()));
         }
 
         // 7. Cleanup old configurations
-        env.storage().persistent().remove(&DataKey::LastActivity(old_owner.clone()));
-        env.storage().persistent().remove(&DataKey::InactivityTimeout(old_owner.clone()));
-        env.storage().persistent().remove(&DataKey::InheritanceBeneficiaries(old_owner.clone()));
-        env.storage().persistent().remove(&DataKey::Beneficiaries(old_owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LastActivity(old_owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::InactivityTimeout(old_owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::InheritanceBeneficiaries(old_owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Beneficiaries(old_owner.clone()));
 
         // Initialize new owner activity
         storage::set_last_activity(env, new_owner, now);
@@ -1047,6 +1246,144 @@ impl BudgetContract {
         if is_budget_frozen(env, user, env.ledger().timestamp()) {
             panic_with_error!(env, BudgetError::BudgetFrozen);
         }
+    }
+
+    /// Saves a budget template from a user's current budget.
+    pub fn save_budget_template(
+        env: Env,
+        user: Address,
+        template_id: Symbol,
+        template_name: Symbol,
+    ) {
+        user.require_auth();
+
+        let budget = load_user_budget(&env, &user).unwrap_or_else(|| {
+            panic_with_error!(&env, BudgetError::BudgetNotFound);
+        });
+
+        let now = env.ledger().timestamp();
+        let template = BudgetTemplate {
+            id: template_id,
+            name: template_name,
+            categories: budget.categories.clone(),
+            created_by: user.clone(),
+            created_at: now,
+        };
+
+        save_template(&env, &template);
+        storage::set_last_activity(&env, &user, now);
+    }
+
+    /// Creates a template from explicit category limits (spent amounts set to 0).
+    pub fn create_template(
+        env: Env,
+        user: Address,
+        template_id: Symbol,
+        template_name: Symbol,
+        categories: Map<Symbol, i128>,
+    ) {
+        user.require_auth();
+
+        let now = env.ledger().timestamp();
+        let mut category_budgets = Map::new(&env);
+
+        for (name, limit) in categories.iter() {
+            category_budgets.set(
+                name.clone(),
+                CategoryBudget {
+                    name: name.clone(),
+                    limit,
+                    spent: 0,
+                },
+            );
+        }
+
+        let template = BudgetTemplate {
+            id: template_id,
+            name: template_name,
+            categories: category_budgets,
+            created_by: user.clone(),
+            created_at: now,
+        };
+
+        save_template(&env, &template);
+        storage::set_last_activity(&env, &user, now);
+    }
+
+    /// Clones a template to a user's budget (sets categories with spent=0).
+    pub fn clone_template(env: Env, user: Address, template_id: Symbol) {
+        user.require_auth();
+
+        let template = get_template(&env, template_id).unwrap_or_else(|| {
+            panic_with_error!(&env, BudgetError::BudgetNotFound);
+        });
+
+        let now = env.ledger().timestamp();
+        let mut budget = load_user_budget(&env, &user).unwrap_or(UserBudget {
+            user: user.clone(),
+            categories: Map::new(&env),
+            last_updated: now,
+        });
+
+        // Apply template categories with spent=0
+        for (name, cat) in template.categories.iter() {
+            budget.categories.set(
+                name.clone(),
+                CategoryBudget {
+                    name: name.clone(),
+                    limit: cat.limit,
+                    spent: 0,
+                },
+            );
+        }
+
+        budget.last_updated = now;
+        set_user_budget(&env, &budget);
+        storage::set_last_activity(&env, &user, now);
+    }
+
+    /// Retrieves a budget template.
+    pub fn get_template(env: Env, template_id: Symbol) -> Option<BudgetTemplate> {
+        get_template(&env, template_id)
+    }
+
+    /// Retrieves all template IDs for a user.
+    pub fn get_user_templates(env: Env, user: Address) -> Vec<Symbol> {
+        get_user_templates(&env, &user)
+    }
+
+    /// Deletes a template (only creator can delete).
+    pub fn delete_template(env: Env, user: Address, template_id: Symbol) {
+        user.require_auth();
+        delete_template(&env, template_id, &user);
+        storage::set_last_activity(&env, &user, env.ledger().timestamp());
+    }
+
+    /// Clones an existing template to a new template ID.
+    pub fn copy_template(
+        env: Env,
+        user: Address,
+        source_template_id: Symbol,
+        new_template_id: Symbol,
+        new_template_name: Symbol,
+    ) {
+        user.require_auth();
+
+        let source_template = get_template(&env, source_template_id).unwrap_or_else(|| {
+            panic_with_error!(&env, BudgetError::BudgetNotFound);
+        });
+
+        let now = env.ledger().timestamp();
+        let new_template = BudgetTemplate {
+            id: new_template_id,
+            name: new_template_name,
+            categories: source_template.categories.clone(),
+            created_by: user.clone(),
+            created_at: now,
+        };
+
+        save_template(&env, &new_template);
+        storage::set_last_activity(&env, &user, now);
     }
 
     fn require_admin(env: &Env, caller: &Address) {

@@ -1,8 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, Address, Env, String, symbol_short};
-use shared::sanitizer::sanitize_description;
 use shared::errors::SharedError;
+use shared::sanitizer::sanitize_description;
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String};
 
 #[contract]
 pub struct TransferContract;
@@ -30,7 +30,8 @@ impl TransferContract {
 
         // 3. Emit an event containing the clean description
         let topics = (symbol_short!("transfer"), symbol_short!("executed"));
-        env.events().publish(topics, (from, to, amount, description));
+        env.events()
+            .publish(topics, (from, to, amount, description));
 
         Ok(())
     }

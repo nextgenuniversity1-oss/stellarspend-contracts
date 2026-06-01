@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use super::{BudgetContract, BudgetContractClient, Beneficiary};
+use super::{Beneficiary, BudgetContract, BudgetContractClient};
 use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol};
 
 fn setup() -> (Env, Address, Address, BudgetContractClient<'static>) {
@@ -176,7 +176,10 @@ fn test_inactivity_timeout_and_ownership_transfer() {
     assert!(client.get_budget(&owner).is_none());
 
     // Category should be transferred
-    assert_eq!(client.get_category_balance(&beneficiary, &symbol_short!("food")), 1_000);
+    assert_eq!(
+        client.get_category_balance(&beneficiary, &symbol_short!("food")),
+        1_000
+    );
 }
 
 #[test]

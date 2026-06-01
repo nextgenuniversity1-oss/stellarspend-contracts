@@ -1,6 +1,6 @@
 extern crate alloc;
-use soroban_sdk::{String, Env};
 use crate::errors::SharedError;
+use soroban_sdk::{Env, String};
 
 /// Validates that a description string only contains safe, printable ASCII characters.
 /// Allows alphanumeric characters, spaces, and basic punctuation.
@@ -63,7 +63,10 @@ mod tests {
 
         for text in invalid_cases.iter() {
             let s = String::from_str(&env, text);
-            assert_eq!(sanitize_description(&env, &s), Err(SharedError::InvalidInput));
+            assert_eq!(
+                sanitize_description(&env, &s),
+                Err(SharedError::InvalidInput)
+            );
         }
     }
 
@@ -76,6 +79,9 @@ mod tests {
             long_text.push('A');
         }
         let s = String::from_str(&env, &long_text);
-        assert_eq!(sanitize_description(&env, &s), Err(SharedError::InvalidLength));
+        assert_eq!(
+            sanitize_description(&env, &s),
+            Err(SharedError::InvalidLength)
+        );
     }
 }
