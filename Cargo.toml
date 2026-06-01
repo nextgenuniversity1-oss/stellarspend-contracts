@@ -62,6 +62,10 @@ path = "contracts/tests/governance_test.rs"
 name = "rate_limit_tests"
 path = "tests/rate_limit_tests.rs"
 
+[[test]]
+name = "concurrent_spending_tests"
+path = "contracts/tests/concurrent_spending_tests.rs"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
