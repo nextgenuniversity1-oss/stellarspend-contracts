@@ -77,6 +77,8 @@ pub enum DataKey {
     BudgetMember(u64, Address),
     /// Contribution details by ID
     Contribution(u64),
+    /// Ordered contribution IDs for a budget
+    BudgetContributions(u64),
     /// Total number of budgets created
     TotalBudgetsCreated,
     /// Total number of contributions processed

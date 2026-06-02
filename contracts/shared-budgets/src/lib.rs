@@ -203,6 +203,17 @@ impl SharedBudgetContract {
         env.storage()
             .persistent()
             .set(&DataKey::Contribution(contribution_id), &contribution);
+
+        let mut contribution_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BudgetContributions(budget_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        contribution_ids.push_back(contribution_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::BudgetContributions(budget_id), &contribution_ids);
+
         env.storage()
             .instance()
             .set(&DataKey::TotalContributionsProcessed, &contribution_id);
@@ -472,6 +483,49 @@ impl SharedBudgetContract {
         // Using RuleNotFound as a generic error
     }
 
+    fn get_budget_contribution_ids(env: &Env, budget_id: u64) -> Vec<u64> {
+        if !env.storage().persistent().has(&DataKey::Budget(budget_id)) {
+            panic_with_error!(env, SharedBudgetError::BudgetNotFound);
+        }
+
+        env.storage()
+            .persistent()
+            .get(&DataKey::BudgetContributions(budget_id))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    /// Get paginated contributions for a budget.
+    pub fn get_contributions_paginated(
+        env: Env,
+        budget_id: u64,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<BudgetContribution> {
+        let limit = limit.min(100);
+        let contribution_ids = Self::get_budget_contribution_ids(&env, budget_id);
+        let total_count = contribution_ids.len();
+
+        let mut result: Vec<BudgetContribution> = Vec::new(&env);
+        if offset >= total_count || limit == 0 {
+            return result;
+        }
+
+        let end = (offset + limit).min(total_count as u32);
+        for i in offset..end {
+            if let Some(contribution_id) = contribution_ids.get(i) {
+                if let Some(contribution) = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Contribution(contribution_id))
+                {
+                    result.push_back(contribution);
+                }
+            }
+        }
+
+        result
+    }
+
     /// Returns the admin address.
     pub fn get_admin(env: Env) -> Address {
         env.storage()
@@ -543,19 +597,10 @@ impl SharedBudgetContract {
 /// Returns an empty Vec if the budget exists but has received no contributions.
 /// Panics with `BudgetNotFound` if the budget does not exist.
 pub fn get_contributions(env: Env, budget_id: u64) -> Vec<BudgetContribution> {
-    // Guard: ensure the budget actually exists
-    if !env.storage().persistent().has(&DataKey::Budget(budget_id)) {
-        panic_with_error!(&env, SharedBudgetError::BudgetNotFound);
-    }
-
-    let ids: Vec<u64> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::BudgetContributions(budget_id))
-        .unwrap_or_else(|| Vec::new(&env));
+    let contribution_ids = Self::get_budget_contribution_ids(&env, budget_id);
 
     let mut result: Vec<BudgetContribution> = Vec::new(&env);
-    for id in ids.iter() {
+    for id in contribution_ids.iter() {
         if let Some(contrib) = env
             .storage()
             .persistent()

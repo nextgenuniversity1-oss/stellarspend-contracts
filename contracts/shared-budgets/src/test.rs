@@ -501,6 +501,79 @@ fn test_get_contributions_isolated_per_budget() {
 }
 
 #[test]
+fn test_get_contributions_paginated_empty() {
+    let (env, _admin, token, _token_client, client) = setup_test_env();
+    let creator = Address::generate(&env);
+    let budget_id = client.create_budget(
+        &creator,
+        &Symbol::new(&env, "empty_budget_paginated"),
+        &Vec::new(&env),
+        &token,
+        &Vec::new(&env),
+    );
+
+    let contribs = client.get_contributions_paginated(&budget_id, &0, &10);
+    assert_eq!(contribs.len(), 0);
+}
+
+#[test]
+fn test_get_contributions_paginated_multiple_pages() {
+    let (env, _admin, token, _token_client, client) = setup_test_env();
+    let creator = Address::generate(&env);
+    let member = Address::generate(&env);
+
+    let mut members: Vec<Address> = Vec::new(&env);
+    members.push_back(member.clone());
+
+    let budget_id = client.create_budget(
+        &creator,
+        &Symbol::new(&env, "multi_page_budget"),
+        &members,
+        &token,
+        &Vec::new(&env),
+    );
+
+    client.contribute_to_budget(&member, &budget_id, &100_000_000_i128, &None);
+    client.contribute_to_budget(&member, &budget_id, &200_000_000_i128, &Some(Symbol::new(&env, "second")));
+    client.contribute_to_budget(&member, &budget_id, &300_000_000_i128, &Some(Symbol::new(&env, "third")));
+
+    let page1 = client.get_contributions_paginated(&budget_id, &0, &2);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap().amount, 100_000_000);
+    assert_eq!(page1.get(1).unwrap().amount, 200_000_000);
+
+    let page2 = client.get_contributions_paginated(&budget_id, &2, &2);
+    assert_eq!(page2.len(), 1);
+    assert_eq!(page2.get(0).unwrap().amount, 300_000_000);
+}
+
+#[test]
+fn test_get_contributions_paginated_deterministic_order() {
+    let (env, _admin, token, _token_client, client) = setup_test_env();
+    let creator = Address::generate(&env);
+    let member = Address::generate(&env);
+
+    let budget_id = client.create_budget(
+        &creator,
+        &Symbol::new(&env, "deterministic_budget"),
+        &Vec::new(&env),
+        &token,
+        &Vec::new(&env),
+    );
+
+    client.contribute_to_budget(&member, &budget_id, &10_000_000_i128, &None);
+    client.contribute_to_budget(&member, &budget_id, &20_000_000_i128, &None);
+    client.contribute_to_budget(&member, &budget_id, &30_000_000_i128, &None);
+
+    let first_page = client.get_contributions_paginated(&budget_id, &0, &2);
+    let second_page = client.get_contributions_paginated(&budget_id, &2, &2);
+
+    assert_eq!(first_page.get(0).unwrap().amount, 10_000_000);
+    assert_eq!(first_page.get(1).unwrap().amount, 20_000_000);
+    assert_eq!(second_page.get(0).unwrap().amount, 30_000_000);
+}
+
+#[test]
 #[should_panic]
 fn test_get_contributions_nonexistent_budget() {
     let (_env, _admin, _token, _token_client, client) = setup_test_env();
