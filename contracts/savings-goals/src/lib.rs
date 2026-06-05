@@ -28,9 +28,10 @@ mod validation;
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
 
 pub use crate::types::{
-    BatchGoalMetrics, BatchGoalResult, BatchMilestoneMetrics, BatchMilestoneResult, DataKey,
-    ErrorCode, GoalEvents, GoalResult, MilestoneAchievement, MilestoneAchievementRequest,
-    MilestoneResult, SavingsGoal, SavingsGoalProgress, SavingsGoalRequest, MAX_BATCH_SIZE,
+    BatchGoalMetrics, BatchGoalResult, BatchMilestoneMetrics, BatchMilestoneResult,
+    ContributionRecord, DataKey, ErrorCode, GoalEvents, GoalResult, MilestoneAchievement,
+    MilestoneAchievementRequest, MilestoneResult, SavingsGoal, SavingsGoalProgress,
+    SavingsGoalRequest, MAX_BATCH_SIZE, REVERSAL_PERIOD_SECS,
 };
 use crate::validation::{
     validate_goal_name_unique, validate_goal_request, validate_milestone_request,
@@ -52,24 +53,26 @@ pub enum SavingsGoalError {
     BatchTooLarge = 5,
     /// Goal is closed (target met) and no longer accepts contributions
     GoalClosed = 6,
-    /// Contribution amount is zero or negative
-    InvalidAmount = 7,
     /// Insufficient balance for withdrawal
-    InsufficientBalance = 6,
+    InsufficientBalance = 7,
     /// Goal is not active
-    GoalNotActive = 7,
+    GoalNotActive = 8,
     /// Invalid goal name
-    InvalidGoalName = 8,
+    InvalidGoalName = 9,
     /// Invalid contribution or withdrawal amount
-    InvalidAmount = 9,
+    InvalidAmount = 10,
     /// Goal not found
-    GoalNotFound = 10,
+    GoalNotFound = 11,
     /// Goal is locked against withdrawals
-    GoalLocked = 11,
+    GoalLocked = 12,
     /// Goal has expired
-    GoalExpired = 12,
+    GoalExpired = 13,
     /// One or more prerequisite goals are not complete
-    DependencyNotMet = 13,
+    DependencyNotMet = 14,
+    /// Reversal window has elapsed
+    ReversalExpired = 15,
+    /// No contribution found with the given ID
+    ContributionNotFound = 16,
 }
 
 impl From<SavingsGoalError> for soroban_sdk::Error {
@@ -499,7 +502,8 @@ impl SavingsGoalsContract {
     }
 
     /// Contributes funds to a savings goal and emits milestone events at 25/50/75/100%.
-    pub fn contribute_to_goal(env: Env, caller: Address, goal_id: u64, amount: i128) -> i128 {
+    /// Returns the contribution ID, which can be used to reverse the contribution within the reversal window.
+    pub fn contribute_to_goal(env: Env, caller: Address, goal_id: u64, amount: i128) -> u64 {
         caller.require_auth();
 
         if amount <= 0 {
@@ -558,8 +562,81 @@ impl SavingsGoalsContract {
             .persistent()
             .set(&DataKey::Goal(goal_id), &goal);
 
+        // Store contribution record for reversal eligibility tracking
+        let contrib_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LastContribId(goal_id))
+            .unwrap_or(0)
+            + 1;
+        let record = ContributionRecord {
+            amount,
+            contributed_at: current_time,
+            reversed: false,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Contribution(goal_id, contrib_id), &record);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LastContribId(goal_id), &contrib_id);
+
         Self::check_and_emit_milestones(&env, goal_id);
         GoalEvents::goal_contributed(&env, goal_id, &caller, amount, goal.current_amount);
+
+        contrib_id
+    }
+
+    /// Reverses a contribution within the reversal period (REVERSAL_PERIOD_SECS).
+    ///
+    /// # Arguments
+    /// * `caller`       - Must be the goal owner.
+    /// * `goal_id`      - The goal that was contributed to.
+    /// * `contrib_id`   - The contribution ID returned by `contribute_to_goal`.
+    ///
+    /// # Errors
+    /// * `GoalNotFound`        - Goal does not exist.
+    /// * `Unauthorized`        - Caller is not the goal owner.
+    /// * `ContributionNotFound`- Contribution ID unknown or already reversed.
+    /// * `ReversalExpired`     - The reversal window has closed.
+    pub fn reverse_contribution(env: Env, caller: Address, goal_id: u64, contrib_id: u64) -> i128 {
+        caller.require_auth();
+
+        let mut goal: SavingsGoal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Goal(goal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, SavingsGoalError::GoalNotFound));
+
+        if goal.user != caller {
+            panic_with_error!(&env, SavingsGoalError::Unauthorized);
+        }
+
+        let mut record: ContributionRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Contribution(goal_id, contrib_id))
+            .unwrap_or_else(|| panic_with_error!(&env, SavingsGoalError::ContributionNotFound));
+
+        if record.reversed {
+            panic_with_error!(&env, SavingsGoalError::ContributionNotFound);
+        }
+
+        let now = env.ledger().timestamp();
+        if now > record.contributed_at.saturating_add(REVERSAL_PERIOD_SECS) {
+            panic_with_error!(&env, SavingsGoalError::ReversalExpired);
+        }
+
+        goal.current_amount = goal.current_amount.saturating_sub(record.amount);
+        goal.is_complete = goal.current_amount >= goal.target_amount;
+        record.reversed = true;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Contribution(goal_id, contrib_id), &record);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Goal(goal_id), &goal);
 
         goal.current_amount
     }

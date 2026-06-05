@@ -1261,3 +1261,49 @@ fn test_clone_savings_goal_unauthorized() {
     let cloned_name = Symbol::new(&env, "cloned");
     client.clone_savings_goal(&user2, &1, &cloned_name); // user2 tries to clone user1's goal
 }
+
+#[test]
+fn test_reverse_contribution_within_window() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    // Create a goal
+    let mut goal_requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    goal_requests.push_back(create_valid_request(&env, &user, "reverse_goal", 100_000_000));
+    client.batch_set_savings_goals(&admin, &goal_requests);
+
+    let goal_id: u64 = 1;
+    let contribution_amount: i128 = 5_000_000;
+
+    // Contribute and capture the contrib_id
+    let contrib_id = client.contribute_to_goal(&user, &goal_id, &contribution_amount);
+
+    // Reverse immediately (still within the 24-hour window)
+    let remaining = client.reverse_contribution(&user, &goal_id, &contrib_id);
+
+    // Balance should be back to the initial contribution (10% = 10_000_000) only
+    let goal = client.get_goal(&goal_id).unwrap();
+    assert_eq!(remaining, goal.current_amount);
+    assert_eq!(goal.current_amount, 100_000_000 / 10); // initial_contribution only
+}
+
+#[test]
+#[should_panic]
+fn test_reverse_contribution_after_window_rejected() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    // Create a goal
+    let mut goal_requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    goal_requests.push_back(create_valid_request(&env, &user, "expired_rev", 100_000_000));
+    client.batch_set_savings_goals(&admin, &goal_requests);
+
+    let goal_id: u64 = 1;
+    let contrib_id = client.contribute_to_goal(&user, &goal_id, &5_000_000i128);
+
+    // Advance time past the 24-hour reversal window
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
+
+    // Should panic with ReversalExpired
+    client.reverse_contribution(&user, &goal_id, &contrib_id);
+}

@@ -197,6 +197,21 @@ pub struct BatchMilestoneResult {
     pub metrics: BatchMilestoneMetrics,
 }
 
+/// Reversal window in seconds (24 hours).
+pub const REVERSAL_PERIOD_SECS: u64 = 86_400;
+
+/// A record of a single contribution, stored for reversal eligibility.
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct ContributionRecord {
+    /// The contribution amount.
+    pub amount: i128,
+    /// Ledger timestamp when the contribution was made.
+    pub contributed_at: u64,
+    /// Whether this contribution has already been reversed.
+    pub reversed: bool,
+}
+
 /// Storage keys for contract state.
 #[derive(Clone)]
 #[contracttype]
@@ -231,6 +246,10 @@ pub enum DataKey {
     GoalClosedAt(u64),
     /// Maps (user, goal_name) -> goal_id for duplicate detection
     GoalByName(Address, Symbol),
+    /// Contribution record keyed by (goal_id, contribution sequential index)
+    Contribution(u64, u64),
+    /// Last contribution index per goal
+    LastContribId(u64),
 }
 
 /// Error codes for goal validation and creation.
