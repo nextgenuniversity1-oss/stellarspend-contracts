@@ -38,6 +38,7 @@ members = [
     "contracts/merchant-tagging",
     "contracts/currency-conversion",
     "contracts/benchmarks",
+    "contracts/zk-verifier",
 ]
 
 [package]
