@@ -4,7 +4,15 @@
 > Soroban smart contracts for automated budgets, savings goals, and private spending limit verification on Stellar.
 
 **Stellar Hacks: Real-World ZK Submission** — We added zero-knowledge proof verification to spending limits. Users can prove a payment is within their limit without revealing the actual amount.
+## Key Features
 
+- Privacy-preserving spending limits
+- UltraHonk proof verification
+- Soroban smart contract integration
+- Automated budget controls
+- Savings goals
+- Escrow services
+- Open-source Stellar infrastructure
 ---
 
 ## Problem
@@ -33,6 +41,15 @@ Users generate a proof off-chain that cryptographically proves their payment is 
 The spending proof circuit successfully generates and verifies a zero-knowledge proof locally using Noir and Barretenberg.
 
 ![ZK Proof Verified](docs/images/zk_proof_verified.png)
+## On-Chain Verification
+
+The generated UltraHonk proof is submitted to the `zk-verifier`
+Soroban contract.
+
+The verifier contract validates the proof before the
+`spending-limits` contract authorizes a payment.
+
+Without successful verification, the transaction is rejected.
 
 ## How ZK Works
 
