@@ -792,7 +792,7 @@ impl SavingsGoalsContract {
         if goal.user != caller {
             panic_with_error!(&env, SavingsGoalError::Unauthorized);
         }
-        if !goal.is_active {
+        if !goal.is_active && !goal.is_complete {
             panic_with_error!(&env, SavingsGoalError::GoalNotActive);
         }
 
@@ -940,8 +940,8 @@ impl SavingsGoalsContract {
             panic_with_error!(&env, SavingsGoalError::Unauthorized);
         }
 
-        // Verify goal is active
-        if !goal.is_active {
+        // Verify goal is active or already complete
+        if !goal.is_active && !goal.is_complete {
             panic_with_error!(&env, SavingsGoalError::GoalNotActive);
         }
 
