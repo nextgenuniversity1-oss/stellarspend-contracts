@@ -2,7 +2,10 @@
 
 #![cfg(test)]
 
-use crate::{EscrowContract, EscrowContractClient, EscrowStatus, ReversalRequest, ReversalResult};
+use crate::{
+    EscrowContract, EscrowContractClient, EscrowStatus, ReversalRequest, ReversalResult,
+    ReleaseRequest, ReleaseResult,
+};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
     token, Address, Env, Vec,
@@ -50,6 +53,11 @@ fn setup_test_env() -> (
 /// Helper to create a reversal request.
 fn create_reversal_request(escrow_id: u64) -> ReversalRequest {
     ReversalRequest { escrow_id }
+}
+
+/// Helper to create a release request.
+fn create_release_request(escrow_id: u64) -> ReleaseRequest {
+    ReleaseRequest { escrow_id }
 }
 
 /// Helper to create an escrow and return its ID.
@@ -798,10 +806,11 @@ fn test_batch_id_increments() {
 
 #[test]
 fn test_release_escrow() {
-    let (env, admin, _token, _token_client, token_admin, client) = setup_test_env();
+    let (env, admin, _token, token_client, token_admin, client) = setup_test_env();
 
     let depositor = Address::generate(&env);
     let recipient = Address::generate(&env);
+    let amount: i128 = 10_000_000;
 
     let escrow_id = create_test_escrow(
         &env,
@@ -809,9 +818,13 @@ fn test_release_escrow() {
         &token_admin,
         &depositor,
         &recipient,
-        10_000_000,
+        amount,
         20000,
     );
+
+    // Verify initial balance
+    assert_eq!(token_client.balance(&recipient), 0);
+    assert_eq!(token_client.balance(&client.address), amount);
 
     // Release the escrow
     client.release_escrow(&admin, &escrow_id);
@@ -819,6 +832,10 @@ fn test_release_escrow() {
     // Check escrow status
     let escrow = client.get_escrow(&escrow_id).unwrap();
     assert_eq!(escrow.status, EscrowStatus::Released);
+
+    // Check balances after release
+    assert_eq!(token_client.balance(&recipient), amount);
+    assert_eq!(token_client.balance(&client.address), 0);
 }
 
 #[test]
@@ -846,6 +863,255 @@ fn test_release_escrow_already_reversed() {
 
     // Try to release - should panic
     client.release_escrow(&admin, &escrow_id);
+}
+
+#[test]
+#[should_panic]
+fn test_release_escrow_unauthorized() {
+    let (env, _admin, _token, _token_client, token_admin, client) = setup_test_env();
+
+    let depositor = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+
+    let escrow_id = create_test_escrow(
+        &env,
+        &client,
+        &token_admin,
+        &depositor,
+        &recipient,
+        10_000_000,
+        20000,
+    );
+
+    // Try to release as unauthorized caller - should panic
+    client.release_escrow(&unauthorized, &escrow_id);
+}
+
+#[test]
+fn test_release_escrow_unauthorized_state_assertions() {
+    let (env, _admin, _token, token_client, token_admin, client) = setup_test_env();
+
+    let depositor = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+    let amount: i128 = 10_000_000;
+
+    let escrow_id = create_test_escrow(
+        &env,
+        &client,
+        &token_admin,
+        &depositor,
+        &recipient,
+        amount,
+        20000,
+    );
+
+    // Verify initial state
+    assert_eq!(token_client.balance(&recipient), 0);
+    assert_eq!(token_client.balance(&client.address), amount);
+
+    // Try to release as unauthorized caller
+    let res = client.try_release_escrow(&unauthorized, &escrow_id);
+    assert!(res.is_err());
+
+    // Assert escrow state remains unchanged (Active)
+    let escrow = client.get_escrow(&escrow_id).unwrap();
+    assert_eq!(escrow.status, EscrowStatus::Active);
+
+    // Assert funds are not transferred
+    assert_eq!(token_client.balance(&recipient), 0);
+    assert_eq!(token_client.balance(&client.address), amount);
+}
+
+#[test]
+fn test_batch_release_escrows_authorized() {
+    let (env, admin, _token, token_client, token_admin, client) = setup_test_env();
+
+    let depositor1 = Address::generate(&env);
+    let depositor2 = Address::generate(&env);
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+
+    let escrow_id1 = create_test_escrow(
+        &env,
+        &client,
+        &token_admin,
+        &depositor1,
+        &recipient1,
+        10_000_000,
+        20000,
+    );
+
+    let escrow_id2 = create_test_escrow(
+        &env,
+        &client,
+        &token_admin,
+        &depositor2,
+        &recipient2,
+        20_000_000,
+        25000,
+    );
+
+    // Admin has authorization to release
+    let mut requests = Vec::new(&env);
+    requests.push_back(create_release_request(escrow_id1));
+    requests.push_back(create_release_request(escrow_id2));
+
+    let result = client.batch_release_escrows(&admin, &requests);
+
+    assert_eq!(result.total_requests, 2);
+    assert_eq!(result.successful, 2);
+    assert_eq!(result.failed, 0);
+    assert_eq!(result.total_released, 30_000_000);
+
+    // Verify statuses
+    assert_eq!(client.get_escrow(&escrow_id1).unwrap().status, EscrowStatus::Released);
+    assert_eq!(client.get_escrow(&escrow_id2).unwrap().status, EscrowStatus::Released);
+
+    // Verify balances
+    assert_eq!(token_client.balance(&recipient1), 10_000_000);
+    assert_eq!(token_client.balance(&recipient2), 20_000_000);
+    assert_eq!(token_client.balance(&client.address), 0);
+}
+
+#[test]
+fn test_batch_release_escrows_unauthorized() {
+    let (env, _admin, _token, token_client, token_admin, client) = setup_test_env();
+
+    let depositor1 = Address::generate(&env);
+    let depositor2 = Address::generate(&env);
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+
+    let escrow_id1 = create_test_escrow(
+        &env,
+        &client,
+        &token_admin,
+        &depositor1,
+        &recipient1,
+        10_000_000,
+        20000,
+    );
+
+    let escrow_id2 = create_test_escrow(
+        &env,
+        &client,
+        &token_admin,
+        &depositor2,
+        &recipient2,
+        20_000_000,
+        25000,
+    );
+
+    // An unauthorized user attempts to release the batch of escrows
+    let mut requests = Vec::new(&env);
+    requests.push_back(create_release_request(escrow_id1));
+    requests.push_back(create_release_request(escrow_id2));
+
+    let result = client.batch_release_escrows(&unauthorized, &requests);
+
+    assert_eq!(result.total_requests, 2);
+    assert_eq!(result.successful, 0);
+    assert_eq!(result.failed, 2);
+    assert_eq!(result.total_released, 0);
+
+    // Check that both results failed with unauthorized code (3)
+    match result.results.get(0).unwrap() {
+        ReleaseResult::Failure(id, error_code) => {
+            assert_eq!(id, escrow_id1);
+            assert_eq!(error_code, 3);
+        }
+        _ => panic!("Expected failure"),
+    }
+
+    match result.results.get(1).unwrap() {
+        ReleaseResult::Failure(id, error_code) => {
+            assert_eq!(id, escrow_id2);
+            assert_eq!(error_code, 3);
+        }
+        _ => panic!("Expected failure"),
+    }
+
+    // Verify statuses remain Active
+    assert_eq!(client.get_escrow(&escrow_id1).unwrap().status, EscrowStatus::Active);
+    assert_eq!(client.get_escrow(&escrow_id2).unwrap().status, EscrowStatus::Active);
+
+    // Verify balances remain unchanged
+    assert_eq!(token_client.balance(&recipient1), 0);
+    assert_eq!(token_client.balance(&recipient2), 0);
+    assert_eq!(token_client.balance(&client.address), 30_000_000);
+}
+
+#[test]
+fn test_batch_release_escrows_partial_unauthorized() {
+    let (env, _admin, _token, token_client, token_admin, client) = setup_test_env();
+
+    let depositor1 = Address::generate(&env);
+    let depositor2 = Address::generate(&env);
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+
+    let escrow_id1 = create_test_escrow(
+        &env,
+        &client,
+        &token_admin,
+        &depositor1,
+        &recipient1,
+        10_000_000,
+        20000,
+    );
+
+    let escrow_id2 = create_test_escrow(
+        &env,
+        &client,
+        &token_admin,
+        &depositor2,
+        &recipient2,
+        20_000_000,
+        25000,
+    );
+
+    // depositor1 attempts to release both escrows
+    let mut requests = Vec::new(&env);
+    requests.push_back(create_release_request(escrow_id1));
+    requests.push_back(create_release_request(escrow_id2));
+
+    let result = client.batch_release_escrows(&depositor1, &requests);
+
+    assert_eq!(result.total_requests, 2);
+    assert_eq!(result.successful, 1);
+    assert_eq!(result.failed, 1);
+    assert_eq!(result.total_released, 10_000_000);
+
+    // Escrow 1 should succeed
+    match result.results.get(0).unwrap() {
+        ReleaseResult::Success(id, rec, amt) => {
+            assert_eq!(id, escrow_id1);
+            assert_eq!(rec, recipient1);
+            assert_eq!(amt, 10_000_000);
+        }
+        _ => panic!("Expected success"),
+    }
+
+    // Escrow 2 should fail with unauthorized (3)
+    match result.results.get(1).unwrap() {
+        ReleaseResult::Failure(id, error_code) => {
+            assert_eq!(id, escrow_id2);
+            assert_eq!(error_code, 3);
+        }
+        _ => panic!("Expected failure"),
+    }
+
+    // Verify statuses
+    assert_eq!(client.get_escrow(&escrow_id1).unwrap().status, EscrowStatus::Released);
+    assert_eq!(client.get_escrow(&escrow_id2).unwrap().status, EscrowStatus::Active);
+
+    // Verify balances
+    assert_eq!(token_client.balance(&recipient1), 10_000_000);
+    assert_eq!(token_client.balance(&recipient2), 0);
+    assert_eq!(token_client.balance(&client.address), 20_000_000);
 }
 
 // ============================================

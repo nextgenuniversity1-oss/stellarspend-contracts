@@ -37,6 +37,7 @@ fn create_valid_request(
         target_amount: amount,
         deadline: current_ledger + 1000,
         initial_contribution: amount / 10, // 10% initial contribution
+        priority: 1,
         lock_duration_seconds: 0,
         penalty_bps: 0,
         expiration_seconds: 0,
@@ -75,6 +76,7 @@ fn test_auto_milestone_events() {
         target_amount: 100_000_000,
         deadline: env.ledger().sequence() as u64 + 1000,
         initial_contribution: 25_000_000,
+        priority: 1,
         lock_duration_seconds: 0,
         penalty_bps: 0,
         expiration_seconds: 0,
@@ -276,7 +278,7 @@ fn test_get_goal() {
     let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
     requests.push_back(create_valid_request(&env, &user, "vacation", 100_000_000));
 
-    let result = client.batch_set_savings_goals(&admin, &requests);
+    let _result = client.batch_set_savings_goals(&admin, &requests);
 
     // Get the created goal
     let goal = client.get_goal(&1).unwrap();
@@ -1107,6 +1109,7 @@ fn test_locked_goal_rejects_withdrawal() {
         target_amount: 100_000_000,
         deadline: env.ledger().sequence() as u64 + 1000,
         initial_contribution: 50_000_000,
+        priority: 1,
         lock_duration_seconds: 86_400,
         penalty_bps: 0,
         expiration_seconds: 0,
@@ -1133,6 +1136,7 @@ fn test_unlocked_goal_allows_withdrawal() {
         target_amount: 100_000_000,
         deadline: env.ledger().sequence() as u64 + 1000,
         initial_contribution: 50_000_000,
+        priority: 1,
         lock_duration_seconds: 0,
         penalty_bps: 0,
         expiration_seconds: 0,
@@ -1156,6 +1160,7 @@ fn test_withdrawal_allowed_after_lock_expires() {
         target_amount: 100_000_000,
         deadline: env.ledger().sequence() as u64 + 1000,
         initial_contribution: 50_000_000,
+        priority: 1,
         lock_duration_seconds: 3_600,
         penalty_bps: 0,
         expiration_seconds: 0,
@@ -1182,6 +1187,7 @@ fn test_early_withdrawal_applies_configured_penalty() {
         target_amount: 100_000_000,
         deadline: env.ledger().sequence() as u64 + 1000,
         initial_contribution: 50_000_000,
+        priority: 1,
         lock_duration_seconds: 0,
         penalty_bps: 1_000,
         expiration_seconds: 0,
@@ -1204,6 +1210,7 @@ fn test_withdrawal_has_no_penalty_when_goal_is_complete() {
         target_amount: 100_000_000,
         deadline: env.ledger().sequence() as u64 + 1000,
         initial_contribution: 100_000_000,
+        priority: 1,
         lock_duration_seconds: 0,
         penalty_bps: 1_000,
         expiration_seconds: 0,
@@ -1226,6 +1233,7 @@ fn test_contribute_emits_milestone_events() {
         target_amount: 100_000_000,
         deadline: env.ledger().sequence() as u64 + 1000,
         initial_contribution: 0,
+        priority: 1,
         lock_duration_seconds: 0,
         penalty_bps: 0,
         expiration_seconds: 0,
@@ -1259,6 +1267,7 @@ fn test_record_and_get_goal_snapshots() {
         target_amount: 100_000_000,
         deadline: env.ledger().sequence() as u64 + 1000,
         initial_contribution: 10_000_000,
+        priority: 1,
         lock_duration_seconds: 0,
         penalty_bps: 0,
         expiration_seconds: 0,
@@ -1299,6 +1308,7 @@ fn test_clone_savings_goal() {
         target_amount: 100_000_000,
         deadline: env.ledger().sequence() as u64 + 1000,
         initial_contribution: 50_000_000,
+        priority: 1,
         lock_duration_seconds: 3600,
         penalty_bps: 0,
         expiration_seconds: 0,
@@ -1333,6 +1343,7 @@ fn test_record_goal_snapshot_unauthorized() {
         target_amount: 100_000_000,
         deadline: env.ledger().sequence() as u64 + 1000,
         initial_contribution: 10_000_000,
+        priority: 1,
         lock_duration_seconds: 0,
         penalty_bps: 0,
         expiration_seconds: 0,
@@ -1412,4 +1423,249 @@ fn test_reverse_contribution_after_window_rejected() {
 
     // Should panic with ReversalExpired
     client.reverse_contribution(&user, &goal_id, &contrib_id);
+}
+
+// ==================== Completion Detection Tests ====================
+
+#[test]
+fn test_goal_marked_complete_at_exact_target_threshold() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    // Create a goal with zero initial contribution
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut request = create_valid_request(&env, &user, "target_test", 100_000_000);
+    request.initial_contribution = 0;
+    requests.push_back(request);
+
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // Verify goal starts as not complete
+    let initial_progress = client.get_goal_progress(&1).unwrap();
+    assert_eq!(initial_progress.is_complete, false);
+    assert_eq!(initial_progress.progress_percentage, 0);
+
+    let initial_goal = client.get_goal(&1).unwrap();
+    assert_eq!(initial_goal.is_complete, false);
+    assert_eq!(initial_goal.is_active, true);
+
+    // Contribute exactly to the target amount
+    client.contribute_to_goal(&user, &1, &100_000_000);
+
+    // Verify goal is marked as complete at exact threshold
+    let final_progress = client.get_goal_progress(&1).unwrap();
+    assert_eq!(final_progress.is_complete, true);
+    assert_eq!(final_progress.progress_percentage, 100);
+    assert_eq!(final_progress.current_amount, 100_000_000);
+    assert_eq!(final_progress.target_amount, 100_000_000);
+
+    let final_goal = client.get_goal(&1).unwrap();
+    assert_eq!(final_goal.is_complete, true);
+    assert_eq!(final_goal.current_amount, 100_000_000);
+    assert_eq!(final_goal.target_amount, 100_000_000);
+}
+
+#[test]
+fn test_goal_not_marked_complete_below_target() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    // Create a goal with zero initial contribution
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut request = create_valid_request(&env, &user, "below_target", 100_000_000);
+    request.initial_contribution = 0;
+    requests.push_back(request);
+
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // Test various amounts below target
+    let test_amounts = [1, 50_000_000, 99_999_999]; // 1 stroop, 50%, just under target
+
+    for amount in test_amounts.iter() {
+        // Reset goal for each test
+        client.test_set_goal_current_amount(&1, &0);
+
+        // Contribute amount below target
+        client.contribute_to_goal(&user, &1, amount);
+
+        // Verify goal is not marked as complete
+        let progress = client.get_goal_progress(&1).unwrap();
+        assert_eq!(progress.is_complete, false);
+        assert!(progress.progress_percentage < 100);
+        assert_eq!(progress.current_amount, *amount);
+        assert_eq!(progress.target_amount, 100_000_000);
+
+        let goal = client.get_goal(&1).unwrap();
+        assert_eq!(goal.is_complete, false);
+        assert_eq!(goal.current_amount, *amount);
+    }
+}
+
+#[test]
+fn test_goal_marked_complete_when_contribution_exceeds_target() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    // Create a goal with zero initial contribution
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut request = create_valid_request(&env, &user, "exceed_target", 100_000_000);
+    request.initial_contribution = 0;
+    requests.push_back(request);
+
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // Contribute more than the target amount
+    client.contribute_to_goal(&user, &1, &150_000_000);
+
+    // Verify goal is marked as complete and capped at target
+    let progress = client.get_goal_progress(&1).unwrap();
+    assert_eq!(progress.is_complete, true);
+    assert_eq!(progress.progress_percentage, 100); // Capped at 100%
+    assert_eq!(progress.current_amount, 100_000_000); // Capped at target
+    assert_eq!(progress.target_amount, 100_000_000);
+
+    let goal = client.get_goal(&1).unwrap();
+    assert_eq!(goal.is_complete, true);
+    assert_eq!(goal.current_amount, 100_000_000); // Capped at target
+}
+
+#[test]
+fn test_goal_completion_with_initial_contribution() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    // Test case 1: Initial contribution reaches exact target
+    let mut requests1: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut request1 = create_valid_request(&env, &user, "initial_complete", 100_000_000);
+    request1.initial_contribution = 100_000_000; // Exactly target amount
+    requests1.push_back(request1);
+
+    client.batch_set_savings_goals(&admin, &requests1);
+
+    let progress1 = client.get_goal_progress(&1).unwrap();
+    assert_eq!(progress1.is_complete, true);
+    assert_eq!(progress1.progress_percentage, 100);
+
+    // Test case 2: Initial contribution below target
+    let mut requests2: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut request2 = create_valid_request(&env, &user, "initial_partial", 100_000_000);
+    request2.initial_contribution = 50_000_000; // 50% of target
+    requests2.push_back(request2);
+
+    client.batch_set_savings_goals(&admin, &requests2);
+
+    let progress2 = client.get_goal_progress(&2).unwrap();
+    assert_eq!(progress2.is_complete, false);
+    assert_eq!(progress2.progress_percentage, 50);
+
+    // Now contribute the remaining amount to reach target
+    client.contribute_to_goal(&user, &2, &50_000_000);
+
+    let final_progress = client.get_goal_progress(&2).unwrap();
+    assert_eq!(final_progress.is_complete, true);
+    assert_eq!(final_progress.progress_percentage, 100);
+}
+
+#[test]
+fn test_incremental_contributions_toward_completion() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    // Create a goal with zero initial contribution
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut request = create_valid_request(&env, &user, "incremental", 100_000_000);
+    request.initial_contribution = 0;
+    requests.push_back(request);
+
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // Make incremental contributions
+    let contributions = [25_000_000, 25_000_000, 25_000_000, 25_000_000];
+    let expected_totals = [25_000_000, 50_000_000, 75_000_000, 100_000_000];
+    let expected_percentages = [25, 50, 75, 100];
+    let expected_completion = [false, false, false, true];
+
+    for (i, &contrib) in contributions.iter().enumerate() {
+        client.contribute_to_goal(&user, &1, &contrib);
+
+        let progress = client.get_goal_progress(&1).unwrap();
+        assert_eq!(progress.current_amount, expected_totals[i]);
+        assert_eq!(progress.progress_percentage, expected_percentages[i]);
+        assert_eq!(progress.is_complete, expected_completion[i]);
+
+        let goal = client.get_goal(&1).unwrap();
+        assert_eq!(goal.is_complete, expected_completion[i]);
+    }
+}
+
+#[test]
+fn test_completion_status_persists_across_queries() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    // Create and complete a goal
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut request = create_valid_request(&env, &user, "persistence", 100_000_000);
+    request.initial_contribution = 100_000_000; // Complete immediately
+    requests.push_back(request);
+
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // Verify completion status persists across multiple queries
+    for _ in 0..5 {
+        let progress = client.get_goal_progress(&1).unwrap();
+        assert_eq!(progress.is_complete, true);
+        assert_eq!(progress.progress_percentage, 100);
+
+        let goal = client.get_goal(&1).unwrap();
+        assert_eq!(goal.is_complete, true);
+    }
+}
+
+#[test]
+fn test_progress_query_returns_accurate_completion_data() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    // Test multiple goals with different completion states
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+
+    // Goal 1: 0% complete
+    let mut req1 = create_valid_request(&env, &user, "zero_percent", 100_000_000);
+    req1.initial_contribution = 0;
+    requests.push_back(req1);
+
+    // Goal 2: 75% complete
+    let mut req2 = create_valid_request(&env, &user, "seventy_five", 100_000_000);
+    req2.initial_contribution = 75_000_000;
+    requests.push_back(req2);
+
+    // Goal 3: 100% complete
+    let mut req3 = create_valid_request(&env, &user, "complete", 100_000_000);
+    req3.initial_contribution = 100_000_000;
+    requests.push_back(req3);
+
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // Verify each goal's progress query returns accurate completion data
+    let progress1 = client.get_goal_progress(&1).unwrap();
+    assert_eq!(progress1.goal_id, 1);
+    assert_eq!(progress1.current_amount, 0);
+    assert_eq!(progress1.target_amount, 100_000_000);
+    assert_eq!(progress1.progress_percentage, 0);
+    assert_eq!(progress1.is_complete, false);
+
+    let progress2 = client.get_goal_progress(&2).unwrap();
+    assert_eq!(progress2.goal_id, 2);
+    assert_eq!(progress2.current_amount, 75_000_000);
+    assert_eq!(progress2.target_amount, 100_000_000);
+    assert_eq!(progress2.progress_percentage, 75);
+    assert_eq!(progress2.is_complete, false);
+
+    let progress3 = client.get_goal_progress(&3).unwrap();
+    assert_eq!(progress3.goal_id, 3);
+    assert_eq!(progress3.current_amount, 100_000_000);
+    assert_eq!(progress3.target_amount, 100_000_000);
+    assert_eq!(progress3.progress_percentage, 100);
+    assert_eq!(progress3.is_complete, true);
 }

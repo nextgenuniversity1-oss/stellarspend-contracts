@@ -27,16 +27,13 @@ mod validation;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
 
-use crate::types::SavingsGoal;
 pub use crate::types::{
     BatchGoalMetrics, BatchGoalResult, BatchMilestoneMetrics, BatchMilestoneResult,
     ContributionRecord, DataKey, ErrorCode, GoalEvents, GoalResult, GoalSnapshot,
     MilestoneAchievement, MilestoneAchievementRequest, MilestoneResult, SavingsGoal,
     SavingsGoalProgress, SavingsGoalRequest, MAX_BATCH_SIZE, REVERSAL_PERIOD_SECS,
 };
-use crate::validation::{
-    validate_goal_name_unique, validate_goal_request, validate_milestone_request,
-};
+use crate::validation::{validate_goal_name_unique, validate_goal_request};
 
 const PERSISTENT_TTL_BUMP: u32 = 12_614_400;
 
@@ -114,7 +111,7 @@ impl SavingsGoalsContract {
             .unwrap_or(0)
             + 1;
         let mut total_percentage_points: u32 = 0;
-        let mut processed_at = env.ledger().sequence() as u64;
+        let processed_at = env.ledger().sequence() as u64;
         // Validate batch size
         let request_count = requests.len();
         if request_count == 0 {
@@ -731,6 +728,7 @@ impl SavingsGoalsContract {
             created_at,
             is_active: true,
             is_complete: false,
+            priority: existing_goal.priority,
             unlock_at,
             expires_at,
             penalty_bps: existing_goal.penalty_bps,

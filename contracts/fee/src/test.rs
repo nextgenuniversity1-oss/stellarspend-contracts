@@ -166,7 +166,8 @@ fn test_reset_fee_config_emits_event_with_restored_values() {
         soroban_sdk::vec![
             &env,
             Symbol::new(&env, "fee").into_val(&env),
-            Symbol::new(&env, "reset").into_val(&env)
+            Symbol::new(&env, "reset").into_val(&env),
+            1u32.into_val(&env),
         ]
     );
     let payload: FeeResetEventData = data.into_val(&env);

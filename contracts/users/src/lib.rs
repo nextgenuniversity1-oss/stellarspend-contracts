@@ -1,9 +1,9 @@
 #![no_std]
 
+use shared::errors::SharedError;
 use soroban_sdk::{
     contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, String, Vec,
 };
-use shared::errors::SharedError;
 
 mod storage;
 

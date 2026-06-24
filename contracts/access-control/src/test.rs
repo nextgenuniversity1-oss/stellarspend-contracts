@@ -199,7 +199,7 @@ fn test_get_user_roles_empty() {
 
     let user = Address::generate(&env);
     let roles = client.get_user_roles(&user);
-    
+
     assert_eq!(roles.len(), 0);
 }
 

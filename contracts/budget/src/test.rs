@@ -367,3 +367,45 @@ fn test_budget_history_queryable_after_multiple_changes() {
     assert_eq!(latest.categories.get(travel).unwrap().limit, 300);
     assert_eq!(latest.categories.get(rent).unwrap().limit, 1_200);
 }
+
+// ── Budget expiration logic ───────────────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #18)")]
+fn test_budget_expired_panic() {
+    let (env, admin, user, client) = setup();
+    let (food, _) = setup_categories(&client, &admin, &user);
+
+    client.update_budget(&admin, &user, &1_000, &None);
+    client.configure_expiration(&admin, &user, &100);
+
+    env.ledger().set_timestamp(105);
+    client.spend_from_category(&user, &food, &10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #19)")]
+fn test_budget_inactive_panic() {
+    let (_, admin, user, client) = setup();
+    let (food, _) = setup_categories(&client, &admin, &user);
+
+    client.update_budget(&admin, &user, &1_000, &None);
+    client.mark_inactive(&admin, &user);
+
+    client.spend_from_category(&user, &food, &10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #19)")]
+fn test_transfer_with_inactive_budget() {
+    let (env, admin, user, client) = setup();
+    let (food, travel) = setup_categories(&client, &admin, &user);
+
+    client.update_budget(&admin, &user, &1_000, &None);
+    client.configure_expiration(&admin, &user, &100);
+
+    env.ledger().set_timestamp(105);
+    client.deactivate_if_expired(&user);
+
+    client.transfer_between_categories(&user, &food, &travel, &10);
+}

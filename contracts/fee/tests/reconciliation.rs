@@ -1,6 +1,5 @@
 mod support;
 
-use soroban_sdk::Address;
 use soroban_sdk::{testutils::Address as _, Address};
 use support::setup;
 

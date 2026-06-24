@@ -207,13 +207,21 @@ impl AccessControlContract {
             .instance()
             .get(&DataKey::UserRoles(user))
             .unwrap_or(Map::new(&env));
-            
+
         let mut active_roles = soroban_sdk::Vec::new(&env);
-        if roles.get(Role::Admin).unwrap_or(false) { active_roles.push_back(Role::Admin); }
-        if roles.get(Role::User).unwrap_or(false) { active_roles.push_back(Role::User); }
-        if roles.get(Role::Operator).unwrap_or(false) { active_roles.push_back(Role::Operator); }
-        if roles.get(Role::Auditor).unwrap_or(false) { active_roles.push_back(Role::Auditor); }
-        
+        if roles.get(Role::Admin).unwrap_or(false) {
+            active_roles.push_back(Role::Admin);
+        }
+        if roles.get(Role::User).unwrap_or(false) {
+            active_roles.push_back(Role::User);
+        }
+        if roles.get(Role::Operator).unwrap_or(false) {
+            active_roles.push_back(Role::Operator);
+        }
+        if roles.get(Role::Auditor).unwrap_or(false) {
+            active_roles.push_back(Role::Auditor);
+        }
+
         active_roles
     }
 
@@ -224,11 +232,11 @@ impl AccessControlContract {
             .instance()
             .get(&DataKey::UserRoles(user))
             .unwrap_or(Map::new(&env));
-            
-        roles.get(Role::Admin).unwrap_or(false) ||
-        roles.get(Role::User).unwrap_or(false) ||
-        roles.get(Role::Operator).unwrap_or(false) ||
-        roles.get(Role::Auditor).unwrap_or(false)
+
+        roles.get(Role::Admin).unwrap_or(false)
+            || roles.get(Role::User).unwrap_or(false)
+            || roles.get(Role::Operator).unwrap_or(false)
+            || roles.get(Role::Auditor).unwrap_or(false)
     }
 
     /// Transfer admin role to a new address (current admin only)
