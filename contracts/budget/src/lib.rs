@@ -47,12 +47,6 @@ pub enum BudgetError {
     Unauthorized = 2,
     InvalidAmount = 3,
     UserNotFound = 4,
-    /// Caller is not a delegated manager for this owner
-    NotDelegated = 5,
-    /// Requested amount exceeds the manager's granted permission limit
-    ExceedsPermission = 6,
-    /// Delegation exists but has been revoked (inactive)
-    DelegationNotActive = 7,
     DeletionCooldownNotElapsed = 5,
     NoPendingDeletion = 6,
     BudgetNotFound = 7,
@@ -66,6 +60,14 @@ pub enum BudgetError {
     InvalidPercentages = 15,
     CheckpointNotFound = 16,
     IntegrityCheckFailed = 17,
+    BudgetExpired = 18,
+    BudgetInactive = 19,
+    /// Caller is not a delegated manager for this owner
+    NotDelegated = 20,
+    /// Requested amount exceeds the manager's granted permission limit
+    ExceedsPermission = 21,
+    /// Delegation exists but has been revoked (inactive)
+    DelegationNotActive = 22,
 }
 
 impl From<BudgetError> for soroban_sdk::Error {
@@ -83,6 +85,8 @@ pub struct BudgetRecord {
     pub amount: i128,
     pub asset: Option<Address>,
     pub last_updated: u64,
+    pub expires_at: Option<u64>,
+    pub is_active: bool,
 }
 
 /// Permission record for a delegated budget manager.
@@ -250,24 +254,6 @@ impl BudgetContract {
             .set(&DataKey::TotalAllocated, &0i128);
     }
 
-    /// Updates a single user's budget. Admin only.
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment
-    /// * `admin` - The admin address calling the function
-    /// * `user` - The user address to update budget for
-    /// * `amount` - The new budget amount (must be > 0)
-    pub fn update_budget(env: Env, admin: Address, user: Address, amount: i128) {
-        env.storage()
-            .instance()
-            .set(&DataKey::TransferCounter, &0u64);
-        env.storage()
-            .instance()
-            .set(&DataKey::SuspiciousActivityCount, &0u64);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalAllocated, &0i128);
-    }
 
     /// Updates a single user's budget with optional multi-asset support.
     pub fn update_budget(
@@ -292,12 +278,17 @@ impl BudgetContract {
             .get(&DataKey::TotalAllocated)
             .unwrap_or(0);
 
+        let mut expires_at = None;
+        let mut is_active = true;
+
         if let Some(old_record) = env
             .storage()
             .persistent()
             .get::<DataKey, BudgetRecord>(&DataKey::Budget(user.clone()))
         {
             total_allocated = total_allocated.checked_sub(old_record.amount).unwrap_or(0);
+            expires_at = old_record.expires_at;
+            is_active = old_record.is_active;
         }
 
         total_allocated = total_allocated.checked_add(amount).unwrap_or(i128::MAX);
@@ -307,6 +298,8 @@ impl BudgetContract {
             amount,
             asset: asset.clone(),
             last_updated: current_time,
+            expires_at,
+            is_active,
         };
 
         env.storage()
@@ -397,6 +390,77 @@ impl BudgetContract {
 
         BudgetEvents::category_budget_set(&env, &user, &category, limit);
     }
+
+    fn assert_active_and_not_expired(env: &Env, user: &Address) {
+        if let Some(mut record) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, BudgetRecord>(&DataKey::Budget(user.clone()))
+        {
+            if !record.is_active {
+                panic_with_error!(env, BudgetError::BudgetInactive);
+            }
+            if let Some(expires_at) = record.expires_at {
+                if env.ledger().timestamp() >= expires_at {
+                    record.is_active = false;
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::Budget(user.clone()), &record);
+                    panic_with_error!(env, BudgetError::BudgetExpired);
+                }
+            }
+        }
+    }
+
+    pub fn configure_expiration(env: Env, admin: Address, user: Address, expires_at: u64) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        let mut record = env
+            .storage()
+            .persistent()
+            .get::<DataKey, BudgetRecord>(&DataKey::Budget(user.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, BudgetError::UserNotFound));
+
+        record.expires_at = Some(expires_at);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Budget(user.clone()), &record);
+    }
+
+    pub fn mark_inactive(env: Env, admin: Address, user: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        let mut record = env
+            .storage()
+            .persistent()
+            .get::<DataKey, BudgetRecord>(&DataKey::Budget(user.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, BudgetError::UserNotFound));
+
+        record.is_active = false;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Budget(user.clone()), &record);
+    }
+
+    pub fn deactivate_if_expired(env: Env, user: Address) {
+        if let Some(mut record) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, BudgetRecord>(&DataKey::Budget(user.clone()))
+        {
+            if let Some(expires_at) = record.expires_at {
+                if env.ledger().timestamp() >= expires_at {
+                    record.is_active = false;
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::Budget(user.clone()), &record);
+                }
+            }
+        }
+    }
+
     pub fn transfer_between_categories(
         env: Env,
         user: Address,
@@ -406,6 +470,7 @@ impl BudgetContract {
     ) -> u64 {
         user.require_auth();
         Self::assert_not_frozen(&env, &user);
+        Self::assert_active_and_not_expired(&env, &user);
 
         if amount <= 0 {
             panic_with_error!(&env, BudgetError::InvalidAmount);
@@ -479,6 +544,7 @@ impl BudgetContract {
     pub fn spend_from_category(env: Env, user: Address, category: Symbol, amount: i128) -> i128 {
         user.require_auth();
         Self::assert_not_frozen(&env, &user);
+        Self::assert_active_and_not_expired(&env, &user);
 
         if amount <= 0 {
             panic_with_error!(&env, BudgetError::InvalidAmount);
@@ -907,12 +973,18 @@ impl BudgetContract {
             .get(&DataKey::TotalAllocated)
             .unwrap_or(0);
 
+        let mut expires_at = None;
+        let mut is_active = true;
+        let mut asset = None;
         if let Some(old_record) = env
             .storage()
             .persistent()
             .get::<DataKey, BudgetRecord>(&DataKey::Budget(owner.clone()))
         {
             total_allocated = total_allocated.checked_sub(old_record.amount).unwrap_or(0);
+            expires_at = old_record.expires_at;
+            is_active = old_record.is_active;
+            asset = old_record.asset;
         }
 
         total_allocated = total_allocated.checked_add(amount).unwrap_or(i128::MAX);
@@ -920,7 +992,10 @@ impl BudgetContract {
         let record = BudgetRecord {
             user: owner.clone(),
             amount,
+            asset,
             last_updated: current_time,
+            expires_at,
+            is_active,
         };
 
         env.storage()
@@ -1098,6 +1173,8 @@ impl BudgetContract {
                                 amount: share,
                                 asset: None,
                                 last_updated: now,
+                                expires_at: None,
+                                is_active: true,
                             },
                         );
                     }
@@ -1149,6 +1226,8 @@ impl BudgetContract {
                                     amount: share,
                                     asset: Some(asset.clone()),
                                     last_updated: now,
+                                    expires_at: None,
+                                    is_active: true,
                                 },
                             );
                         }
@@ -1318,7 +1397,7 @@ mod test {
         let (env, admin, client) = setup_test_contract();
         let user = Address::generate(&env);
 
-        client.update_budget(&admin, &user, &1_000_i128);
+        client.update_budget(&admin, &user, &1_000_i128, &None);
 
         let record = client.get_budget(&user).unwrap();
         assert_eq!(record.amount, 1_000);
@@ -1331,8 +1410,8 @@ mod test {
         let user1 = Address::generate(&env);
         let user2 = Address::generate(&env);
 
-        client.update_budget(&admin, &user1, &500_i128);
-        client.update_budget(&admin, &user2, &300_i128);
+        client.update_budget(&admin, &user1, &500_i128, &None);
+        client.update_budget(&admin, &user2, &300_i128, &None);
 
         assert_eq!(client.get_total_allocated(), 800);
     }
@@ -1446,7 +1525,7 @@ mod test {
         client.delegate_manager(&owner, &manager, &100_i128);
 
         // Admin (ultimate control) can still set any amount, including above manager's limit
-        client.update_budget(&admin, &owner, &999_999_i128);
+        client.update_budget(&admin, &owner, &999_999_i128, &None);
 
         let record = client.get_budget(&owner).unwrap();
         assert_eq!(record.amount, 999_999);
