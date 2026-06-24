@@ -1,3 +1,4 @@
+use alloc::format;
 use soroban_sdk::{Env, String, Symbol};
 
 /// Shared validation errors for simple reusable helpers.
@@ -80,10 +81,7 @@ pub fn generate_transaction_reference_id(
 
     // Combine components to create reference ID
     // Format: TXN-{ledger}{counter}
-    let ref_id = String::from_str(
-        env,
-        &format!("TXN-{}{}", ledger_str, counter_str[..8].to_string()),
-    );
+    let ref_id = String::from_str(env, &format!("TXN-{}{}", ledger_str, &counter_str[..8]));
 
     ref_id
 }

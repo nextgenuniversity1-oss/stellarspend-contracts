@@ -12,7 +12,7 @@ pub use crate::types::{
 };
 //bbbb
 use crate::validation::{
-    validate_address, validate_amount, validate_batch_not_empty, validate_unique_recipient,
+    validate_address, validate_amount, validate_batch_not_empty, validate_unique_recipients,
 };
 use shared::validation::validate_batch_size;
 
@@ -32,6 +32,8 @@ pub enum BatchTransferError {
     BatchTooLarge = 5,
     /// Invalid token contract
     InvalidToken = 6,
+    /// Duplicate recipient in batch
+    DuplicateRecipient = 7,
 }
 
 impl From<BatchTransferError> for soroban_sdk::Error {
@@ -83,8 +85,10 @@ impl BatchTransferContract {
             panic_with_error!(&env, BatchTransferError::BatchTooLarge);
         }
 
-        // Prepare duplicate detection state.
-        let mut seen_recipients: Vec<Address> = Vec::new(&env);
+        // Reject duplicate recipients before emitting events or moving funds.
+        if validate_unique_recipients(&env, &transfers).is_err() {
+            panic_with_error!(&env, BatchTransferError::DuplicateRecipient);
+        }
 
         // Get batch ID and increment
         let batch_id: u64 = env
@@ -117,28 +121,16 @@ impl BatchTransferContract {
         for request in transfers.iter() {
             let mut is_valid = true;
             let mut error_code = 0u32;
-            let mut is_unique = true;
 
             // Validate recipient address
             if validate_address(&env, &request.recipient).is_err() {
                 is_valid = false;
                 error_code = 0; // Invalid address
-                is_unique = false;
-            }
-            // Validate duplicate recipient in batch
-            else if validate_unique_recipient(&seen_recipients, &request.recipient).is_err() {
-                is_valid = false;
-                error_code = 3; // Duplicate recipient
-                is_unique = false;
             }
             // Validate amount
             else if validate_amount(request.amount).is_err() {
                 is_valid = false;
                 error_code = 1; // Invalid amount
-            }
-
-            if is_unique {
-                seen_recipients.push_back(request.recipient.clone());
             }
 
             if is_valid {
