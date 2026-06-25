@@ -33,6 +33,7 @@ members = [
     "contracts/category-analytics",
     "contracts/spending-categories",
     "contracts/users",
+    "contracts/transactional",
     "contracts/transactions",
     "contracts/transaction-validation",
     "contracts/merchant-tagging",
