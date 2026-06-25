@@ -3,8 +3,8 @@
 #![cfg(test)]
 
 use crate::{
-    BatchBurnResult, BatchTransferContract, BatchTransferContractClient, BurnRequest,
-    TransferRequest, TransferResult,
+    BatchBurnResult, BatchTransferContract, BatchTransferContractClient, BatchTransferError,
+    BurnRequest, TransferRequest, TransferResult,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
@@ -192,32 +192,15 @@ fn test_batch_transfer_rejects_duplicate_recipients() {
     transfers.push_back(create_transfer_request(&env, recipient.clone(), amount));
     transfers.push_back(create_transfer_request(&env, recipient.clone(), amount));
 
-    let result = client.batch_transfer(&admin, &token, &transfers);
+    let result = client.try_batch_transfer(&admin, &token, &transfers);
+    let expected_error: soroban_sdk::Error = BatchTransferError::DuplicateRecipient.into();
 
-    assert_eq!(result.total_requests, 2);
-    assert_eq!(result.successful, 1);
-    assert_eq!(result.failed, 1);
-    assert_eq!(result.total_transferred, amount);
-
-    match result.results.get(0).unwrap() {
-        TransferResult::Success(recv, transferred_amount) => {
-            assert_eq!(recv.clone(), recipient);
-            assert_eq!(transferred_amount.clone(), amount);
-        }
-        _ => panic!("Expected first transfer to succeed"),
+    match result {
+        Err(Ok(error)) => assert_eq!(error, expected_error),
+        other => panic!("expected duplicate recipient error, got {:?}", other),
     }
-
-    match result.results.get(1).unwrap() {
-        TransferResult::Failure(recv, failed_amount, error_code) => {
-            assert_eq!(recv.clone(), recipient);
-            assert_eq!(failed_amount.clone(), amount);
-            assert_eq!(error_code, 3); // Duplicate recipient
-        }
-        _ => panic!("Expected duplicate recipient to fail"),
-    }
-
-    assert_eq!(token_client.balance(&recipient), amount);
-    assert_eq!(token_client.balance(&admin), amount);
+    assert_eq!(token_client.balance(&recipient), 0);
+    assert_eq!(token_client.balance(&admin), amount * 2);
 }
 
 #[test]

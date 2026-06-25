@@ -1,5 +1,6 @@
 //! Validation utilities for batch transfers.
 
+use crate::TransferRequest;
 use soroban_sdk::{Address, Env, Vec};
 
 /// Validation error types.
@@ -24,10 +25,25 @@ pub fn validate_unique_recipient(
     recipient: &Address,
 ) -> Result<(), ValidationError> {
     for existing in seen.iter() {
-        if *existing == *recipient {
+        if existing == recipient.clone() {
             return Err(ValidationError::DuplicateRecipient(recipient.clone()));
         }
     }
+    Ok(())
+}
+
+/// Validates that each transfer recipient appears only once in the batch.
+pub fn validate_unique_recipients(
+    env: &Env,
+    transfers: &Vec<TransferRequest>,
+) -> Result<(), ValidationError> {
+    let mut seen: Vec<Address> = Vec::new(env);
+
+    for request in transfers.iter() {
+        validate_unique_recipient(&seen, &request.recipient)?;
+        seen.push_back(request.recipient.clone());
+    }
+
     Ok(())
 }
 
@@ -94,6 +110,27 @@ mod tests {
         assert_eq!(
             validate_batch_not_empty(&transfers),
             Err(ValidationError::EmptyBatch)
+        );
+    }
+
+    #[test]
+    fn test_validate_unique_recipients_rejects_duplicate() {
+        let env = Env::default();
+        let recipient = Address::generate(&env);
+        let mut transfers: Vec<TransferRequest> = Vec::new(&env);
+
+        transfers.push_back(TransferRequest {
+            recipient: recipient.clone(),
+            amount: 100,
+        });
+        transfers.push_back(TransferRequest {
+            recipient: recipient.clone(),
+            amount: 200,
+        });
+
+        assert_eq!(
+            validate_unique_recipients(&env, &transfers),
+            Err(ValidationError::DuplicateRecipient(recipient))
         );
     }
 }

@@ -3,8 +3,8 @@
 #![cfg(test)]
 
 use crate::{
-    EscrowContract, EscrowContractClient, EscrowStatus, ReversalRequest, ReversalResult,
-    ReleaseRequest, ReleaseResult,
+    EscrowContract, EscrowContractClient, EscrowStatus, ReleaseRequest, ReleaseResult,
+    ReversalRequest, ReversalResult,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
@@ -966,8 +966,14 @@ fn test_batch_release_escrows_authorized() {
     assert_eq!(result.total_released, 30_000_000);
 
     // Verify statuses
-    assert_eq!(client.get_escrow(&escrow_id1).unwrap().status, EscrowStatus::Released);
-    assert_eq!(client.get_escrow(&escrow_id2).unwrap().status, EscrowStatus::Released);
+    assert_eq!(
+        client.get_escrow(&escrow_id1).unwrap().status,
+        EscrowStatus::Released
+    );
+    assert_eq!(
+        client.get_escrow(&escrow_id2).unwrap().status,
+        EscrowStatus::Released
+    );
 
     // Verify balances
     assert_eq!(token_client.balance(&recipient1), 10_000_000);
@@ -1035,8 +1041,14 @@ fn test_batch_release_escrows_unauthorized() {
     }
 
     // Verify statuses remain Active
-    assert_eq!(client.get_escrow(&escrow_id1).unwrap().status, EscrowStatus::Active);
-    assert_eq!(client.get_escrow(&escrow_id2).unwrap().status, EscrowStatus::Active);
+    assert_eq!(
+        client.get_escrow(&escrow_id1).unwrap().status,
+        EscrowStatus::Active
+    );
+    assert_eq!(
+        client.get_escrow(&escrow_id2).unwrap().status,
+        EscrowStatus::Active
+    );
 
     // Verify balances remain unchanged
     assert_eq!(token_client.balance(&recipient1), 0);
@@ -1105,8 +1117,14 @@ fn test_batch_release_escrows_partial_unauthorized() {
     }
 
     // Verify statuses
-    assert_eq!(client.get_escrow(&escrow_id1).unwrap().status, EscrowStatus::Released);
-    assert_eq!(client.get_escrow(&escrow_id2).unwrap().status, EscrowStatus::Active);
+    assert_eq!(
+        client.get_escrow(&escrow_id1).unwrap().status,
+        EscrowStatus::Released
+    );
+    assert_eq!(
+        client.get_escrow(&escrow_id2).unwrap().status,
+        EscrowStatus::Active
+    );
 
     // Verify balances
     assert_eq!(token_client.balance(&recipient1), 10_000_000);

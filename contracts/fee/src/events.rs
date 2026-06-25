@@ -139,12 +139,7 @@ impl FeeEvents {
     }
 
     pub fn min_fee_updated(env: &Env, min_fee: i128) {
-        publish(
-            env,
-            symbol_short!("fee"),
-            symbol_short!("minfee"),
-            min_fee,
-        );
+        publish(env, symbol_short!("fee"), symbol_short!("minfee"), min_fee);
     }
 
     pub fn fee_rolled(env: &Env, from_cycle: u64, to_cycle: u64, amount: i128) {

@@ -254,7 +254,6 @@ impl BudgetContract {
             .set(&DataKey::TotalAllocated, &0i128);
     }
 
-
     /// Updates a single user's budget with optional multi-asset support.
     pub fn update_budget(
         env: Env,
