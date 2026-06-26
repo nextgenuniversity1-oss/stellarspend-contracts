@@ -91,6 +91,40 @@ impl TransactionContract {
         }
     }
 
+    /// Calculate the average amount across stored transactions.
+    pub fn get_average_transaction_amount(env: Env) -> i128 {
+        let counter: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Counter)
+            .unwrap_or(0);
+
+        if counter == 0 {
+            return 0;
+        }
+
+        let mut sum: i128 = 0;
+        let mut i: u32 = 1;
+
+        while i <= counter {
+            let tx_id: Option<Symbol> = env.storage().instance().get(&DataKey::TxSeq(i));
+
+            if let Some(id) = tx_id {
+                if let Some(tx) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Transaction>(&DataKey::Transaction(id))
+                {
+                    sum += tx.amount;
+                }
+            }
+
+            i += 1;
+        }
+
+        sum / (counter as i128)
+    }
+
     /// Optional: fetch by id
     pub fn get_transaction(env: Env, id: Symbol) -> Option<Transaction> {
         let key = DataKey::Transaction(id);

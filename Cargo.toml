@@ -34,12 +34,14 @@ members = [
     "contracts/spending-categories",
     "contracts/users",
     "contracts/activity-feed",
+    "contracts/transactional",
     "contracts/transactions",
     "contracts/transaction-validation",
     "contracts/merchant-tagging",
     "contracts/currency-conversion",
     "contracts/benchmarks",
     "contracts/zk-verifier",
+    "contracts/pausable",
 ]
 
 [package]

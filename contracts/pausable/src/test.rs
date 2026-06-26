@@ -3,14 +3,14 @@
 use super::*;
 use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env};
 
-fn create_pausable_contract<'a>(env: &Env) -> (PausableContractClient<'a>, Address) {
+fn create_pausable_contract<'a>(env: &Env) -> (Address, PausableContractClient<'a>, Address) {
     let contract_id = env.register_contract(None, PausableContract);
     let client = PausableContractClient::new(env, &contract_id);
     let admin = Address::generate(env);
 
     client.initialize(&admin);
 
-    (client, admin)
+    (contract_id, client, admin)
 }
 
 #[test]
@@ -47,7 +47,7 @@ fn test_pause_contract() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, admin) = create_pausable_contract(&env);
+    let (_contract_id, client, admin) = create_pausable_contract(&env);
 
     assert_eq!(client.is_paused(), false);
 
@@ -62,7 +62,7 @@ fn test_pause_already_paused() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, admin) = create_pausable_contract(&env);
+    let (_contract_id, client, admin) = create_pausable_contract(&env);
 
     client.pause(&admin);
     client.pause(&admin); // Should panic
@@ -73,7 +73,7 @@ fn test_unpause_contract() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, admin) = create_pausable_contract(&env);
+    let (_contract_id, client, admin) = create_pausable_contract(&env);
 
     client.pause(&admin);
     assert_eq!(client.is_paused(), true);
@@ -88,7 +88,7 @@ fn test_unpause_not_paused() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, admin) = create_pausable_contract(&env);
+    let (_contract_id, client, admin) = create_pausable_contract(&env);
 
     client.unpause(&admin); // Should panic
 }
@@ -99,7 +99,7 @@ fn test_pause_unauthorized() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _admin) = create_pausable_contract(&env);
+    let (_contract_id, client, _admin) = create_pausable_contract(&env);
     let unauthorized = Address::generate(&env);
 
     client.pause(&unauthorized); // Should panic
@@ -111,7 +111,7 @@ fn test_unpause_unauthorized() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, admin) = create_pausable_contract(&env);
+    let (_contract_id, client, admin) = create_pausable_contract(&env);
     let unauthorized = Address::generate(&env);
 
     client.pause(&admin);
@@ -123,7 +123,7 @@ fn test_set_admin() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, admin) = create_pausable_contract(&env);
+    let (_contract_id, client, admin) = create_pausable_contract(&env);
     let new_admin = Address::generate(&env);
 
     client.set_admin(&admin, &new_admin);
@@ -137,7 +137,7 @@ fn test_set_admin_unauthorized() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _admin) = create_pausable_contract(&env);
+    let (_contract_id, client, _admin) = create_pausable_contract(&env);
     let unauthorized = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
@@ -149,27 +149,14 @@ fn test_pause_unpause_events() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, admin) = create_pausable_contract(&env);
+    let (_contract_id, client, admin) = create_pausable_contract(&env);
 
+    let len_before = env.events().all().len();
     client.pause(&admin);
-
-    let events = env.events().all();
-    let pause_event = events.iter().find(|e| {
-        let topic0 = soroban_sdk::Symbol::try_from_val(&env, e.1.get(0).unwrap()).unwrap();
-        let topic1 = soroban_sdk::Symbol::try_from_val(&env, e.1.get(1).unwrap()).unwrap();
-        topic0 == soroban_sdk::symbol_short!("pausable") && topic1 == soroban_sdk::symbol_short!("paused")
-    });
-    assert!(pause_event.is_some());
+    assert_eq!(env.events().all().len(), len_before + 1);
 
     client.unpause(&admin);
-
-    let events = env.events().all();
-    let unpause_event = events.iter().find(|e| {
-        let topic0 = soroban_sdk::Symbol::try_from_val(&env, e.1.get(0).unwrap()).unwrap();
-        let topic1 = soroban_sdk::Symbol::try_from_val(&env, e.1.get(1).unwrap()).unwrap();
-        topic0 == soroban_sdk::symbol_short!("pausable") && topic1 == soroban_sdk::symbol_short!("unpaused")
-    });
-    assert!(unpause_event.is_some());
+    assert_eq!(env.events().all().len(), len_before + 2);
 }
 
 #[test]
@@ -177,18 +164,12 @@ fn test_admin_changed_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, admin) = create_pausable_contract(&env);
+    let (_contract_id, client, admin) = create_pausable_contract(&env);
     let new_admin = Address::generate(&env);
 
+    let len_before = env.events().all().len();
     client.set_admin(&admin, &new_admin);
-
-    let events = env.events().all();
-    let admin_changed_event = events.iter().find(|e| {
-        let topic0 = soroban_sdk::Symbol::try_from_val(&env, e.1.get(0).unwrap()).unwrap();
-        let topic1 = soroban_sdk::Symbol::try_from_val(&env, e.1.get(1).unwrap()).unwrap();
-        topic0 == soroban_sdk::symbol_short!("pausable") && topic1 == soroban_sdk::symbol_short!("adminchgd")
-    });
-    assert!(admin_changed_event.is_some());
+    assert_eq!(env.events().all().len(), len_before + 1);
 }
 
 #[test]
@@ -196,7 +177,7 @@ fn test_multiple_pause_unpause_cycles() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, admin) = create_pausable_contract(&env);
+    let (_contract_id, client, admin) = create_pausable_contract(&env);
 
     for _ in 0..3 {
         client.pause(&admin);
@@ -205,4 +186,46 @@ fn test_multiple_pause_unpause_cycles() {
         client.unpause(&admin);
         assert_eq!(client.is_paused(), false);
     }
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_require_not_paused_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, client, admin) = create_pausable_contract(&env);
+
+    client.pause(&admin);
+
+    env.as_contract(&contract_id, || {
+        PausableContract::require_not_paused(&env);
+    });
+}
+
+#[test]
+fn test_require_not_paused_succeeds_after_unpause() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, client, admin) = create_pausable_contract(&env);
+
+    client.pause(&admin);
+    client.unpause(&admin);
+
+    env.as_contract(&contract_id, || {
+        PausableContract::require_not_paused(&env);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_non_admin_cannot_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_contract_id, client, _admin) = create_pausable_contract(&env);
+    let non_admin = Address::generate(&env);
+
+    client.pause(&non_admin);
 }

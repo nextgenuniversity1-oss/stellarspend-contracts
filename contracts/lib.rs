@@ -6,10 +6,20 @@
 pub mod delegation;
 pub mod errors;
 pub mod fees;
+pub mod multisig_savings_withdrawal;
+pub mod multisig_savings_withdrawal_utils;
+
 // Re-export commonly used types and functions
 pub use errors::{
     ErrorCategory, ErrorContext, ErrorDocumentation, ErrorHelpers, ErrorSeverity, RetryStrategy,
     StellarSpendError,
+};
+pub use multisig_savings_withdrawal::{
+    approve_withdrawal, get_withdrawal_approvers, get_withdrawal_approval_count,
+    get_withdrawal_quorum, get_withdrawal_request, get_withdrawal_status, get_withdrawal_threshold,
+    initialize_withdrawal_config, is_withdrawal_approver, next_withdrawal_id, request_withdrawal,
+    requires_approval, set_withdrawal_approvers, set_withdrawal_threshold, WithdrawalRequest,
+    WithdrawalStatus,
 };
 
 use soroban_sdk::{contracterror, contracttype, panic_with_error, Address, Env, Map, String, Vec};
