@@ -2,6 +2,9 @@
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Env, Symbol, Vec};
 
+#[cfg(test)]
+mod test;
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct ActivityEvent {
